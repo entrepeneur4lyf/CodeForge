@@ -2,13 +2,13 @@ package cmd
 
 import (
 	"bufio"
+	"context"
 	"fmt"
-	"io/ioutil"
 	"os"
 	"strings"
 
-	"github.com/shawn/codeforge/internal/builder"
-	"github.com/shawn/codeforge/internal/llm"
+	"github.com/entrepeneur4lyf/codeforge/internal/builder"
+	"github.com/entrepeneur4lyf/codeforge/internal/llm"
 	"github.com/spf13/cobra"
 )
 
@@ -16,12 +16,7 @@ var buildCmd = &cobra.Command{
 	Use:   "build",
 	Short: "Build the project and attempt to fix errors",
 	Run: func(cmd *cobra.Command, args []string) {
-		apiKey := os.Getenv("OPENAI_API_KEY")
-		if apiKey == "" {
-			fmt.Println("Error: OPENAI_API_KEY environment variable not set.")
-			os.Exit(1)
-		}
-		llm.Init(apiKey)
+		// Configuration and LLM initialization is handled by the root command
 
 		for i := 0; i < 3; i++ { // Limit to 3 attempts
 			output, err := builder.BuildGo()
@@ -39,9 +34,16 @@ var buildCmd = &cobra.Command{
 				return
 			}
 
-			fileContent, err := ioutil.ReadFile(filePath)
+			fileContent, err := os.ReadFile(filePath)
 			if err != nil {
 				fmt.Printf("Error reading file %s: %s\n", filePath, err)
+				return
+			}
+
+			// Get the default model for code fixing
+			defaultModel, err := llm.GetDefaultModel()
+			if err != nil {
+				fmt.Printf("Error getting default model: %s\n", err)
 				return
 			}
 
@@ -50,13 +52,26 @@ var buildCmd = &cobra.Command{
 				filePath, string(fileContent), errorStr,
 			)
 
-			fix, err := llm.GetCompletion(prompt)
+			// Create completion request
+			req := llm.CompletionRequest{
+				Model: defaultModel.ID,
+				Messages: []llm.Message{
+					{
+						Role:    "user",
+						Content: prompt,
+					},
+				},
+				MaxTokens:   defaultModel.DefaultMaxTokens,
+				Temperature: 0.1, // Low temperature for code fixing
+			}
+
+			fix, err := llm.GetCompletion(context.Background(), req)
 			if err != nil {
 				fmt.Printf("Error getting fix from LLM: %s\n", err)
 				return
 			}
 
-			code := builder.ExtractCode(fix)
+			code := builder.ExtractCode(fix.Content)
 
 			diff, err := builder.GenerateDiff(filePath, code)
 			if err != nil {

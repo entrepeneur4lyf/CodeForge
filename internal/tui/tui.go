@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"context"
 	"fmt"
 	"log"
 	"os"
@@ -10,8 +11,8 @@ import (
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/entrepeneur4lyf/codeforge/internal/llm"
 	"github.com/mattn/go-isatty"
-	"github.com/shawn/codeforge/internal/llm"
 )
 
 // IsTTY returns true if the current environment is a TTY.
@@ -71,11 +72,30 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.viewport.GotoBottom()
 
 			return m, func() tea.Msg {
-				resp, err := llm.GetCompletion(userInput)
+				// Get the default model
+				defaultModel, err := llm.GetDefaultModel()
 				if err != nil {
 					return errMsg{err}
 				}
-				return llmResponseMsg(resp)
+
+				// Create completion request
+				req := llm.CompletionRequest{
+					Model: defaultModel.ID,
+					Messages: []llm.Message{
+						{
+							Role:    "user",
+							Content: userInput,
+						},
+					},
+					MaxTokens:   defaultModel.DefaultMaxTokens,
+					Temperature: 0.7,
+				}
+
+				resp, err := llm.GetCompletion(context.Background(), req)
+				if err != nil {
+					return errMsg{err}
+				}
+				return llmResponseMsg(resp.Content)
 			}
 		}
 	case llmResponseMsg:
@@ -88,7 +108,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
-	return m, tea.Batch(tacmd, vpcmd, extra)
+	return m, tea.Batch(tacmd, vpcmd)
 }
 
 func (m model) View() string {
@@ -102,8 +122,8 @@ func (m model) View() string {
 	)
 }
 
-func Start(apiKey string) {
-	llm.Init(apiKey)
+func Start() {
+	// The LLM system should already be initialized by the root command
 	p := tea.NewProgram(InitialModel())
 
 	if err := p.Start(); err != nil {
