@@ -10,115 +10,84 @@ import (
 
 // OpenAIProvider implements the Provider interface for OpenAI
 type OpenAIProvider struct {
-	client *openai.Client
-	apiKey string
+	client  *openai.Client
+	options ProviderOptions
 }
 
-// NewOpenAIProvider creates a new OpenAI provider
-func NewOpenAIProvider(apiKey string) *OpenAIProvider {
-	var client *openai.Client
-	if apiKey != "" {
-		client = openai.NewClient(apiKey)
+// NewOpenAIProvider creates a new OpenAI provider using the new pattern
+func NewOpenAIProvider(options *ProviderOptions) Provider {
+	config := openai.DefaultConfig(options.APIKey)
+
+	// Set custom base URL if provided (for Groq, OpenRouter, etc.)
+	if options.BaseURL != "" {
+		config.BaseURL = options.BaseURL
 	}
+
+	client := openai.NewClientWithConfig(config)
 
 	return &OpenAIProvider{
-		client: client,
-		apiKey: apiKey,
+		client:  client,
+		options: *options,
 	}
 }
 
-// Name returns the provider name
-func (p *OpenAIProvider) Name() models.ModelProvider {
-	return models.ProviderOpenAI
+// Model returns the configured model
+func (p *OpenAIProvider) Model() models.Model {
+	return p.options.Model
 }
 
-// IsConfigured returns true if the provider is properly configured
-func (p *OpenAIProvider) IsConfigured() bool {
-	return p.client != nil && p.apiKey != ""
-}
-
-// SupportsModel returns true if the provider supports the given model
-func (p *OpenAIProvider) SupportsModel(modelID models.ModelID) bool {
-	model, exists := models.GetModel(modelID)
-	if !exists {
-		return false
-	}
-	return model.Provider == models.ProviderOpenAI
-}
-
-// CreateCompletion creates a completion using OpenAI's API
-func (p *OpenAIProvider) CreateCompletion(ctx context.Context, req CompletionRequest) (*CompletionResponse, error) {
-	if !p.IsConfigured() {
-		return nil, fmt.Errorf("OpenAI provider not configured")
+// SendMessage sends a message and returns the response
+func (p *OpenAIProvider) SendMessage(ctx context.Context, message string) (string, error) {
+	if p.client == nil || p.options.APIKey == "" {
+		return "", fmt.Errorf("OpenAI provider not configured")
 	}
 
-	// Get the model information
-	model, exists := models.GetModel(req.Model)
-	if !exists {
-		return nil, fmt.Errorf("unknown model: %s", req.Model)
+	// Create messages array
+	messages := []openai.ChatCompletionMessage{
+		{
+			Role:    openai.ChatMessageRoleUser,
+			Content: message,
+		},
 	}
 
-	if model.Provider != models.ProviderOpenAI {
-		return nil, fmt.Errorf("model %s is not an OpenAI model", req.Model)
-	}
-
-	// Convert our messages to OpenAI format
-	var openaiMessages []openai.ChatCompletionMessage
-	for _, msg := range req.Messages {
-		openaiMessages = append(openaiMessages, openai.ChatCompletionMessage{
-			Role:    msg.Role,
-			Content: msg.Content,
-		})
+	// Add system message if provided
+	if p.options.SystemMessage != "" {
+		messages = append([]openai.ChatCompletionMessage{
+			{
+				Role:    openai.ChatMessageRoleSystem,
+				Content: p.options.SystemMessage,
+			},
+		}, messages...)
 	}
 
 	// Set up the request
-	openaiReq := openai.ChatCompletionRequest{
-		Model:    model.APIModel,
-		Messages: openaiMessages,
+	req := openai.ChatCompletionRequest{
+		Model:    p.options.Model.APIModel,
+		Messages: messages,
 	}
 
-	// Set max tokens if specified
-	if req.MaxTokens > 0 {
-		openaiReq.MaxTokens = int(req.MaxTokens)
-	} else if model.DefaultMaxTokens > 0 {
-		openaiReq.MaxTokens = int(model.DefaultMaxTokens)
-	}
-
-	// Set temperature if specified
-	if req.Temperature > 0 {
-		openaiReq.Temperature = float32(req.Temperature)
+	// Set max tokens
+	if p.options.MaxTokens > 0 {
+		req.MaxTokens = int(p.options.MaxTokens)
 	}
 
 	// Handle reasoning models (O1 series) differently
-	if model.CanReason {
-		// O1 models don't support temperature or max_tokens in the same way
-		openaiReq.Temperature = 0
-		if req.MaxTokens > 0 {
-			// O1 models use max_completion_tokens instead
-			openaiReq.MaxCompletionTokens = int(req.MaxTokens)
+	if p.options.Model.CanReason {
+		req.Temperature = 0
+		if p.options.MaxTokens > 0 {
+			req.MaxCompletionTokens = int(p.options.MaxTokens)
 		}
 	}
 
 	// Create the completion
-	resp, err := p.client.CreateChatCompletion(ctx, openaiReq)
+	resp, err := p.client.CreateChatCompletion(ctx, req)
 	if err != nil {
-		return nil, fmt.Errorf("OpenAI API error: %w", err)
+		return "", fmt.Errorf("OpenAI API error: %w", err)
 	}
 
 	if len(resp.Choices) == 0 {
-		return nil, fmt.Errorf("no choices returned from OpenAI")
+		return "", fmt.Errorf("no choices returned from OpenAI")
 	}
 
-	// Calculate total tokens used
-	var tokensUsed int64
-	if resp.Usage.TotalTokens > 0 {
-		tokensUsed = int64(resp.Usage.TotalTokens)
-	}
-
-	return &CompletionResponse{
-		Content:      resp.Choices[0].Message.Content,
-		Model:        resp.Model,
-		TokensUsed:   tokensUsed,
-		FinishReason: string(resp.Choices[0].FinishReason),
-	}, nil
+	return resp.Choices[0].Message.Content, nil
 }

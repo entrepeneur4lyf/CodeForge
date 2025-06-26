@@ -3,7 +3,7 @@ package cmd
 import (
 	"fmt"
 
-	"github.com/spf13/cobra"
+	tea "github.com/charmbracelet/bubbletea"
 	"github.com/entrepeneur4lyf/codeforge/internal/config"
 	"github.com/entrepeneur4lyf/codeforge/internal/embeddings"
 	"github.com/entrepeneur4lyf/codeforge/internal/llm"
@@ -11,6 +11,7 @@ import (
 	"github.com/entrepeneur4lyf/codeforge/internal/mcp"
 	"github.com/entrepeneur4lyf/codeforge/internal/tui"
 	"github.com/entrepeneur4lyf/codeforge/internal/vectordb"
+	"github.com/spf13/cobra"
 )
 
 // tuiCmd represents the tui command
@@ -88,9 +89,22 @@ Example:
 		fmt.Println("💡 Press Tab to switch panes, Ctrl+C to quit")
 		fmt.Println()
 
-		// Start the TUI
-		tui.Start()
+		// Create the TUI application
+		app := tui.NewApp(workingDir)
 
+		// Start the Bubble Tea program
+		p := tea.NewProgram(
+			app,
+			tea.WithAltScreen(),
+			tea.WithMouseCellMotion(),
+		)
+
+		// Run the program
+		if _, err := p.Run(); err != nil {
+			return fmt.Errorf("error running CodeForge TUI: %w", err)
+		}
+
+		fmt.Println("Thanks for using CodeForge! 🚀")
 		return nil
 	},
 }

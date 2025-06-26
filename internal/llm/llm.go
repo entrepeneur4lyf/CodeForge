@@ -31,14 +31,6 @@ type CompletionResponse struct {
 	FinishReason string `json:"finish_reason,omitempty"`
 }
 
-// Provider interface that all LLM providers must implement
-type Provider interface {
-	Name() models.ModelProvider
-	CreateCompletion(ctx context.Context, req CompletionRequest) (*CompletionResponse, error)
-	SupportsModel(modelID models.ModelID) bool
-	IsConfigured() bool
-}
-
 // Manager handles multiple LLM providers
 type Manager struct {
 	providers map[models.ModelProvider]Provider
@@ -86,12 +78,29 @@ func (m *Manager) CreateCompletion(ctx context.Context, req CompletionRequest) (
 		return nil, fmt.Errorf("provider %s not available", model.Provider)
 	}
 
-	if !provider.IsConfigured() {
-		return nil, fmt.Errorf("provider %s not configured", model.Provider)
+	// Convert messages to a single string for now (simplified interface)
+	var messageContent string
+	for _, msg := range req.Messages {
+		messageContent += fmt.Sprintf("%s: %s\n", msg.Role, msg.Content)
 	}
 
-	// Create the completion
-	return provider.CreateCompletion(ctx, req)
+	// Send message using the simplified interface
+	response, err := provider.SendMessage(ctx, messageContent)
+	if err != nil {
+		return nil, err
+	}
+
+	// Estimate token usage (rough approximation: 1 token ≈ 4 characters)
+	inputTokens := int64(len(messageContent) / 4)
+	outputTokens := int64(len(response) / 4)
+	totalTokens := inputTokens + outputTokens
+
+	return &CompletionResponse{
+		Content:      response,
+		Model:        string(req.Model),
+		TokensUsed:   totalTokens,
+		FinishReason: "stop",
+	}, nil
 }
 
 // GetAvailableModels returns all models from configured providers
@@ -101,18 +110,14 @@ func GetAvailableModels() []models.Model {
 	}
 
 	var availableModels []models.Model
-	for _, provider := range manager.providers {
-		if !provider.IsConfigured() {
+	for providerType, provider := range manager.providers {
+		if provider == nil {
 			continue
 		}
 
-		// Get all models for this provider
-		providerModels := models.GetModelsByProvider(provider.Name())
-		for _, model := range providerModels {
-			if provider.SupportsModel(model.ID) {
-				availableModels = append(availableModels, model)
-			}
-		}
+		// Get all models for this provider type
+		providerModels := models.GetModelsByProvider(providerType)
+		availableModels = append(availableModels, providerModels...)
 	}
 
 	return availableModels
@@ -141,7 +146,7 @@ func GetDefaultModel() (models.Model, error) {
 
 	for _, providerName := range providerOrder {
 		provider, exists := manager.providers[providerName]
-		if !exists || !provider.IsConfigured() {
+		if !exists || provider == nil {
 			continue
 		}
 
@@ -154,18 +159,46 @@ func GetDefaultModel() (models.Model, error) {
 	return models.Model{}, fmt.Errorf("no configured providers available")
 }
 
-// initializeProviders sets up all available providers
+// initializeProviders sets up all available providers from Phase 1 specification
+// Based on OpenCode's proven provider architecture (MIT licensed)
 func (m *Manager) initializeProviders() error {
-	// For now, we'll add a basic OpenAI provider
-	// We'll expand this to include all providers from OpenCode
-
-	if providerCfg, exists := config.GetProvider(models.ProviderOpenAI); exists && !providerCfg.Disabled {
-		openaiProvider := NewOpenAIProvider(providerCfg.APIKey)
-		m.providers[models.ProviderOpenAI] = openaiProvider
+	// Initialize all Phase 1 providers using OpenCode's pattern
+	providerTypes := []models.ModelProvider{
+		models.ProviderCopilot,
+		models.ProviderAnthropic,
+		models.ProviderOpenAI,
+		models.ProviderGemini,
+		models.ProviderGROQ,
+		models.ProviderOpenRouter,
+		models.ProviderBedrock,
+		models.ProviderAzure,
+		models.ProviderVertexAI,
+		models.ProviderXAI,
+		models.ProviderLocal,
 	}
 
-	// TODO: Add other providers (Anthropic, Gemini, etc.)
-	// This will be expanded in the next iteration
+	for _, providerType := range providerTypes {
+		if providerCfg, exists := config.GetProvider(providerType); exists && !providerCfg.Disabled {
+			// Get default model for this provider
+			defaultModel, modelExists := models.GetDefaultModelForProvider(providerType)
+			if !modelExists {
+				continue // Skip if no default model available
+			}
+
+			// Create provider using OpenCode's factory pattern
+			provider, err := NewProvider(providerType,
+				WithAPIKey(providerCfg.APIKey),
+				WithModel(defaultModel),
+				WithMaxTokens(defaultModel.DefaultMaxTokens),
+			)
+			if err != nil {
+				fmt.Printf("Failed to initialize provider %s: %v\n", providerType, err)
+				continue
+			}
+
+			m.providers[providerType] = provider
+		}
+	}
 
 	return nil
 }
