@@ -5,10 +5,13 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"os"
+	"strings"
 	"time"
 
 	"github.com/entrepeneur4lyf/codeforge/internal/config"
 	"github.com/entrepeneur4lyf/codeforge/internal/embeddings"
+	"github.com/entrepeneur4lyf/codeforge/internal/llm"
 	"github.com/entrepeneur4lyf/codeforge/internal/lsp"
 	"github.com/entrepeneur4lyf/codeforge/internal/mcp"
 	"github.com/entrepeneur4lyf/codeforge/internal/vectordb"
@@ -76,6 +79,18 @@ type BuildRequest struct {
 	Command  string `json:"command,omitempty"`
 }
 
+// SettingsRequest represents a settings update request
+type SettingsRequest struct {
+	Category string                 `json:"category"`
+	Settings map[string]interface{} `json:"settings"`
+}
+
+// CommandRequest represents a command palette request
+type CommandRequest struct {
+	Command string                 `json:"command"`
+	Args    map[string]interface{} `json:"args,omitempty"`
+}
+
 // NewServer creates a new web server
 func NewServer(cfg *config.Config) *Server {
 	router := mux.NewRouter()
@@ -107,6 +122,9 @@ func (s *Server) setupRoutes() {
 	api.HandleFunc("/chat", s.handleChat).Methods("POST")
 	api.HandleFunc("/files", s.handleFiles).Methods("GET", "POST")
 	api.HandleFunc("/build", s.handleBuild).Methods("POST")
+	api.HandleFunc("/settings", s.handleSettings).Methods("GET", "POST")
+	api.HandleFunc("/commands", s.handleCommands).Methods("POST")
+	api.HandleFunc("/providers", s.handleProviders).Methods("GET")
 	api.HandleFunc("/lsp", s.handleLSP).Methods("POST")
 	api.HandleFunc("/mcp", s.handleMCP).Methods("POST")
 	api.HandleFunc("/mcp/tools", s.handleMCPTools).Methods("GET")
@@ -120,7 +138,7 @@ func (s *Server) setupRoutes() {
 	s.router.HandleFunc("/", s.handleIndex).Methods("GET")
 }
 
-// handleIndex serves the main web interface (TUI-style)
+// handleIndex serves the main web interface (WebTUI-style)
 func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 	html := `<!DOCTYPE html>
 <html lang="en">
@@ -129,101 +147,68 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>CodeForge - AI-Powered Code Assistant</title>
     <style>
-        * { margin: 0; padding: 0; box-sizing: border-box; }
+        @layer base, utils, components;
+
+        @import "https://cdn.jsdelivr.net/npm/@webtui/css@0.0.5/dist/base.css";
+
+        /* Utils */
+        @import "https://cdn.jsdelivr.net/npm/@webtui/css@0.0.5/dist/utils/box.css";
+
+        /* Components */
+        @import "https://cdn.jsdelivr.net/npm/@webtui/css@0.0.5/dist/components/button.css";
+        @import "https://cdn.jsdelivr.net/npm/@webtui/css@0.0.5/dist/components/typography.css";
+        </style>
+    <style>
+        /* WebTUI customizations for CodeForge */
         body {
-            font-family: 'JetBrains Mono', 'Fira Code', 'Consolas', monospace;
-            background: #0d1117;
-            color: #c9d1d9;
             height: 100vh;
             overflow: hidden;
         }
 
-        /* TUI-style layout */
+        /* Main layout using WebTUI grid */
         .main-container {
             display: grid;
             grid-template-columns: 250px 1fr 300px;
-            grid-template-rows: 40px 1fr 200px;
+            grid-template-rows: auto 1fr auto;
             height: 100vh;
             gap: 1px;
-            background: #21262d;
         }
 
-        /* Header bar */
+        /* Header using WebTUI navbar */
         .header-bar {
             grid-column: 1 / -1;
-            background: #161b22;
-            display: flex;
-            align-items: center;
-            padding: 0 16px;
-            border-bottom: 1px solid #30363d;
         }
 
-        .header-bar h1 {
-            color: #58a6ff;
-            font-size: 16px;
-            font-weight: 600;
-        }
-
-        .header-status {
-            margin-left: auto;
-            display: flex;
-            gap: 12px;
-            font-size: 12px;
-        }
-
-        .status-indicator {
-            display: flex;
-            align-items: center;
-            gap: 4px;
-        }
-
+        /* Status indicators */
         .status-dot {
             width: 8px;
             height: 8px;
             border-radius: 50%;
-            background: #f85149;
+            display: inline-block;
+            margin-right: 4px;
         }
 
-        .status-dot.active { background: #3fb950; }
-        .status-dot.warning { background: #d29922; }
+        .status-dot.active { background: var(--wt-color-success); }
+        .status-dot.warning { background: var(--wt-color-warning); }
+        .status-dot.error { background: var(--wt-color-danger); }
 
-        /* File browser pane */
-        .file-browser {
-            background: #0d1117;
-            border-right: 1px solid #30363d;
-            overflow-y: auto;
-        }
-
-        .pane-header {
-            background: #161b22;
-            padding: 8px 12px;
-            border-bottom: 1px solid #30363d;
-            font-size: 12px;
-            font-weight: 600;
-            color: #7d8590;
-        }
-
-        .file-tree {
-            padding: 8px;
-        }
-
+        /* File browser customizations */
         .file-item {
-            padding: 4px 8px;
             cursor: pointer;
-            border-radius: 4px;
-            font-size: 13px;
             display: flex;
             align-items: center;
             gap: 6px;
+            padding: 4px 8px;
+            border-radius: 4px;
         }
 
         .file-item:hover {
-            background: #21262d;
+            background: var(--wt-color-surface-hover);
         }
 
         .file-item.selected {
-            background: #1f6feb;
-            color: white;
+            background: var(--wt-color-primary);
+            color: var(--wt-color-primary-contrast);
         }
 
         .file-icon {
@@ -231,38 +216,18 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
             text-align: center;
         }
 
-        /* Code editor pane */
-        .code-editor {
-            background: #0d1117;
-            display: flex;
-            flex-direction: column;
-        }
-
+        /* Editor customizations */
         .editor-tabs {
-            background: #161b22;
-            border-bottom: 1px solid #30363d;
             display: flex;
             overflow-x: auto;
         }
 
         .editor-tab {
-            padding: 8px 16px;
-            border-right: 1px solid #30363d;
             cursor: pointer;
-            font-size: 13px;
             white-space: nowrap;
             display: flex;
             align-items: center;
             gap: 6px;
-        }
-
-        .editor-tab.active {
-            background: #0d1117;
-            color: #58a6ff;
-        }
-
-        .editor-tab:hover:not(.active) {
-            background: #21262d;
         }
 
         .tab-close {
@@ -273,16 +238,7 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 
         .tab-close:hover {
             opacity: 1;
-            color: #f85149;
-        }
-
-        .editor-content {
-            flex: 1;
-            padding: 16px;
-            overflow: auto;
-            font-family: 'JetBrains Mono', monospace;
-            font-size: 14px;
-            line-height: 1.5;
+            color: var(--wt-color-danger);
         }
 
         .code-textarea {
@@ -290,22 +246,12 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
             height: 100%;
             background: transparent;
             border: none;
-            color: #c9d1d9;
-            font-family: inherit;
-            font-size: inherit;
-            line-height: inherit;
             resize: none;
             outline: none;
+            font-family: var(--wt-font-mono);
         }
 
-        /* AI Chat pane */
-        .ai-chat {
-            background: #0d1117;
-            border-left: 1px solid #30363d;
-            display: flex;
-            flex-direction: column;
-        }
-
+        /* Chat customizations */
         .chat-messages {
             flex: 1;
             overflow-y: auto;
@@ -316,87 +262,245 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
             margin-bottom: 16px;
             padding: 8px 12px;
             border-radius: 6px;
-            font-size: 13px;
-            line-height: 1.4;
         }
 
         .message.user {
-            background: #1f6feb;
-            color: white;
+            background: var(--wt-color-primary);
+            color: var(--wt-color-primary-contrast);
             margin-left: 20px;
         }
 
         .message.ai {
-            background: #21262d;
+            background: var(--wt-color-surface);
             margin-right: 20px;
         }
 
         .message.system {
-            background: #2d1b00;
-            color: #d29922;
+            background: var(--wt-color-warning);
+            color: var(--wt-color-warning-contrast);
             font-style: italic;
         }
 
-        .chat-input-container {
-            border-top: 1px solid #30363d;
-            padding: 12px;
-        }
-
-        .chat-input {
-            width: 100%;
-            background: #21262d;
-            border: 1px solid #30363d;
-            border-radius: 6px;
-            padding: 8px 12px;
-            color: #c9d1d9;
-            font-size: 13px;
-            resize: none;
-            outline: none;
-        }
-
-        .chat-input:focus {
-            border-color: #58a6ff;
-        }
-
-        /* Output/Terminal pane */
+        /* Terminal customizations */
         .output-terminal {
             grid-column: 1 / -1;
-            background: #0d1117;
-            border-top: 1px solid #30363d;
             display: flex;
             flex-direction: column;
-        }
-
-        .terminal-tabs {
-            background: #161b22;
-            border-bottom: 1px solid #30363d;
-            display: flex;
-        }
-
-        .terminal-tab {
-            padding: 6px 12px;
-            border-right: 1px solid #30363d;
-            cursor: pointer;
-            font-size: 12px;
-            color: #7d8590;
-        }
-
-        .terminal-tab.active {
-            background: #0d1117;
-            color: #c9d1d9;
         }
 
         .terminal-content {
             flex: 1;
             padding: 12px;
             overflow: auto;
-            font-family: 'JetBrains Mono', monospace;
-            font-size: 12px;
-            line-height: 1.4;
+            font-family: var(--wt-font-mono);
         }
 
         .terminal-output {
             white-space: pre-wrap;
+        }
+
+        /* Modal customizations - WebTUI will handle most styling */
+        .modal-overlay {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(0, 0, 0, 0.8);
+            display: none;
+            z-index: 1000;
+            align-items: center;
+            justify-content: center;
+        }
+
+        /* Command palette styles */
+        .command-palette {
+            width: 600px;
+            max-height: 400px;
+        }
+
+        .command-input {
+            width: 100%;
+            background: #0d1117;
+            border: 1px solid #30363d;
+            border-radius: 6px;
+            padding: 12px 16px;
+            color: #c9d1d9;
+            font-size: 14px;
+            margin-bottom: 12px;
+        }
+
+        .command-input:focus {
+            outline: none;
+            border-color: #58a6ff;
+        }
+
+        .command-list {
+            max-height: 300px;
+            overflow-y: auto;
+        }
+
+        .command-item {
+            padding: 8px 12px;
+            cursor: pointer;
+            border-radius: 4px;
+            display: flex;
+            align-items: center;
+            gap: 12px;
+        }
+
+        .command-item:hover,
+        .command-item.selected {
+            background: #21262d;
+        }
+
+        .command-icon {
+            width: 16px;
+            text-align: center;
+        }
+
+        .command-details {
+            flex: 1;
+        }
+
+        .command-name {
+            font-weight: 500;
+            color: #c9d1d9;
+        }
+
+        .command-description {
+            font-size: 12px;
+            color: #8b949e;
+        }
+
+        .command-shortcut {
+            font-size: 11px;
+            color: #8b949e;
+            background: #21262d;
+            padding: 2px 6px;
+            border-radius: 3px;
+        }
+
+        /* Settings panel styles */
+        .settings-nav {
+            display: flex;
+            border-bottom: 1px solid #30363d;
+            margin-bottom: 20px;
+        }
+
+        .settings-tab {
+            padding: 8px 16px;
+            cursor: pointer;
+            border-bottom: 2px solid transparent;
+            color: #8b949e;
+        }
+
+        .settings-tab.active {
+            color: #58a6ff;
+            border-bottom-color: #58a6ff;
+        }
+
+        .settings-section {
+            display: none;
+        }
+
+        .settings-section.active {
+            display: block;
+        }
+
+        .setting-group {
+            margin-bottom: 24px;
+        }
+
+        .setting-label {
+            display: block;
+            margin-bottom: 8px;
+            font-weight: 500;
+            color: #c9d1d9;
+        }
+
+        .setting-input,
+        .setting-select {
+            width: 100%;
+            background: #0d1117;
+            border: 1px solid #30363d;
+            border-radius: 6px;
+            padding: 8px 12px;
+            color: #c9d1d9;
+            font-size: 14px;
+        }
+
+        .setting-input:focus,
+        .setting-select:focus {
+            outline: none;
+            border-color: #58a6ff;
+        }
+
+        .setting-checkbox {
+            margin-right: 8px;
+        }
+
+        .provider-card {
+            background: #0d1117;
+            border: 1px solid #30363d;
+            border-radius: 6px;
+            padding: 16px;
+            margin-bottom: 12px;
+        }
+
+        .provider-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            margin-bottom: 12px;
+        }
+
+        .provider-name {
+            font-weight: 600;
+            color: #c9d1d9;
+        }
+
+        .provider-status {
+            font-size: 12px;
+            padding: 2px 8px;
+            border-radius: 12px;
+        }
+
+        .provider-status.available {
+            background: #1a7f37;
+            color: #ffffff;
+        }
+
+        .provider-status.unavailable {
+            background: #da3633;
+            color: #ffffff;
+        }
+
+        .model-list {
+            display: grid;
+            gap: 8px;
+        }
+
+        .model-item {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            padding: 8px;
+            background: #21262d;
+            border-radius: 4px;
+        }
+
+        .model-radio {
+            margin: 0;
+        }
+
+        .model-name {
+            flex: 1;
+            color: #c9d1d9;
+        }
+
+        .model-tokens {
+            font-size: 12px;
             color: #8b949e;
         }
 
@@ -416,6 +520,15 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
                 border-left: none;
                 border-top: 1px solid #30363d;
             }
+
+            .modal {
+                width: 95%;
+                max-height: 90%;
+            }
+
+            .command-palette {
+                width: 100%;
+            }
         }
 
         /* Syntax highlighting */
@@ -428,54 +541,64 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 </head>
 <body>
     <div class="main-container">
-        <!-- Header Bar -->
-        <div class="header-bar">
-            <h1>🔧 CodeForge</h1>
-            <div class="header-status">
+        <!-- Header Bar using WebTUI navbar -->
+        <nav class="wt-navbar header-bar">
+            <div class="wt-navbar-brand">
+                <h1 class="wt-text-primary">🔧 CodeForge</h1>
+            </div>
+            <div class="wt-navbar-nav">
+                <button class="wt-btn wt-btn-ghost wt-btn-sm" onclick="openCommandPalette()" title="Command Palette (Ctrl+Shift+P)">⌘</button>
+                <button class="wt-btn wt-btn-ghost wt-btn-sm" onclick="openSettings()" title="Settings">⚙️</button>
                 <div class="status-indicator">
                     <div class="status-dot active" id="embeddingDot"></div>
-                    <span>Embedding</span>
+                    <span class="wt-text-muted">Embedding</span>
                 </div>
                 <div class="status-indicator">
                     <div class="status-dot warning" id="lspDot"></div>
-                    <span>LSP</span>
+                    <span class="wt-text-muted">LSP</span>
                 </div>
                 <div class="status-indicator">
                     <div class="status-dot warning" id="mcpDot"></div>
-                    <span>MCP</span>
+                    <span class="wt-text-muted">MCP</span>
+                </div>
+            </div>
+        </nav>
+
+        <!-- File Browser using WebTUI panel -->
+        <div class="wt-panel file-browser">
+            <div class="wt-panel-header">
+                <h3 class="wt-panel-title">📁 FILES</h3>
+            </div>
+            <div class="wt-panel-body">
+                <div class="wt-list" id="fileTree">
+                    <div class="wt-list-item file-item" onclick="openFile('README.md')">
+                        <span class="file-icon">📄</span>
+                        <span>README.md</span>
+                    </div>
+                    <div class="wt-list-item file-item" onclick="openFile('main.go')">
+                        <span class="file-icon">🔧</span>
+                        <span>main.go</span>
+                    </div>
+                    <div class="wt-list-item file-item" onclick="openFile('config.yaml')">
+                        <span class="file-icon">⚙️</span>
+                        <span>config.yaml</span>
+                    </div>
                 </div>
             </div>
         </div>
 
-        <!-- File Browser -->
-        <div class="file-browser">
-            <div class="pane-header">📁 FILES</div>
-            <div class="file-tree" id="fileTree">
-                <div class="file-item" onclick="openFile('README.md')">
-                    <span class="file-icon">📄</span>
-                    <span>README.md</span>
-                </div>
-                <div class="file-item" onclick="openFile('main.go')">
-                    <span class="file-icon">🔧</span>
-                    <span>main.go</span>
-                </div>
-                <div class="file-item" onclick="openFile('config.yaml')">
-                    <span class="file-icon">⚙️</span>
-                    <span>config.yaml</span>
+        <!-- Code Editor using WebTUI panel -->
+        <div class="wt-panel code-editor">
+            <div class="wt-panel-header">
+                <div class="wt-tabs editor-tabs">
+                    <div class="wt-tab wt-tab-active editor-tab" id="welcomeTab">
+                        <span>Welcome</span>
+                        <span class="tab-close" onclick="closeTab('welcome')">×</span>
+                    </div>
                 </div>
             </div>
-        </div>
-
-        <!-- Code Editor -->
-        <div class="code-editor">
-            <div class="editor-tabs">
-                <div class="editor-tab active" id="welcomeTab">
-                    <span>Welcome</span>
-                    <span class="tab-close" onclick="closeTab('welcome')">×</span>
-                </div>
-            </div>
-            <div class="editor-content">
-                <textarea class="code-textarea" id="codeEditor" placeholder="// Welcome to CodeForge!
+            <div class="wt-panel-body">
+                <textarea class="wt-input code-textarea" id="codeEditor" placeholder="// Welcome to CodeForge!
 // Open a file from the file browser or start a new conversation with AI.
 
 package main
@@ -490,32 +613,182 @@ func main() {
             </div>
         </div>
 
-        <!-- AI Chat -->
-        <div class="ai-chat">
-            <div class="pane-header">🤖 AI ASSISTANT</div>
-            <div class="chat-messages" id="chatMessages">
-                <div class="message system">
-                    CodeForge AI Assistant ready! Ask me about your code, request explanations, or get help with debugging.
-                </div>
+        <!-- AI Chat using WebTUI panel -->
+        <div class="wt-panel ai-chat">
+            <div class="wt-panel-header">
+                <h3 class="wt-panel-title">🤖 AI ASSISTANT</h3>
             </div>
-            <div class="chat-input-container">
-                <textarea class="chat-input" id="chatInput" placeholder="Ask me anything about your code..." rows="3"></textarea>
+            <div class="wt-panel-body" style="display: flex; flex-direction: column;">
+                <div class="chat-messages" id="chatMessages" style="flex: 1; overflow-y: auto; margin-bottom: 12px;">
+                    <div class="wt-alert wt-alert-info message system">
+                        CodeForge AI Assistant ready! Ask me about your code, request explanations, or get help with debugging.
+                    </div>
+                </div>
+                <div class="chat-input-container">
+                    <textarea class="wt-input chat-input" id="chatInput" placeholder="Ask me anything about your code..." rows="3"></textarea>
+                </div>
             </div>
         </div>
 
-        <!-- Output/Terminal -->
-        <div class="output-terminal">
-            <div class="terminal-tabs">
-                <div class="terminal-tab active" onclick="switchTerminalTab('output')">Output</div>
-                <div class="terminal-tab" onclick="switchTerminalTab('terminal')">Terminal</div>
-                <div class="terminal-tab" onclick="switchTerminalTab('problems')">Problems</div>
+        <!-- Output/Terminal using WebTUI panel -->
+        <div class="wt-panel output-terminal">
+            <div class="wt-panel-header">
+                <div class="wt-tabs terminal-tabs">
+                    <div class="wt-tab wt-tab-active terminal-tab" onclick="switchTerminalTab('output')">Output</div>
+                    <div class="wt-tab terminal-tab" onclick="switchTerminalTab('terminal')">Terminal</div>
+                    <div class="wt-tab terminal-tab" onclick="switchTerminalTab('problems')">Problems</div>
+                </div>
             </div>
-            <div class="terminal-content">
-                <div class="terminal-output" id="terminalOutput">
+            <div class="wt-panel-body">
+                <div class="wt-terminal terminal-content">
+                    <div class="terminal-output" id="terminalOutput">
 CodeForge initialized successfully.
 Ready for development.
 
 Use Ctrl+backtick to focus terminal, Ctrl+1 for files, Ctrl+2 for editor, Ctrl+3 for AI chat.
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Command Palette Modal using WebTUI -->
+    <div class="modal-overlay" id="commandPaletteModal">
+        <div class="wt-modal wt-modal-lg command-palette">
+            <div class="wt-modal-header">
+                <h4 class="wt-modal-title">Command Palette</h4>
+                <button class="wt-btn wt-btn-ghost wt-btn-sm" onclick="closeModal('commandPaletteModal')">×</button>
+            </div>
+            <div class="wt-modal-body">
+                <input type="text" class="wt-input command-input" id="commandInput" placeholder="Type a command..." />
+                <div class="wt-list command-list" id="commandList">
+                    <div class="wt-list-item command-item" onclick="executeCommand('file.new')">
+                        <div class="command-icon">📄</div>
+                        <div class="command-details">
+                            <div class="command-name">New File</div>
+                            <div class="wt-text-muted command-description">Create a new file</div>
+                        </div>
+                        <div class="wt-badge command-shortcut">Ctrl+N</div>
+                    </div>
+                    <div class="wt-list-item command-item" onclick="executeCommand('file.save')">
+                        <div class="command-icon">💾</div>
+                        <div class="command-details">
+                            <div class="command-name">Save File</div>
+                            <div class="wt-text-muted command-description">Save the current file</div>
+                        </div>
+                        <div class="wt-badge command-shortcut">Ctrl+S</div>
+                    </div>
+                    <div class="wt-list-item command-item" onclick="executeCommand('build.run')">
+                        <div class="command-icon">🔨</div>
+                        <div class="command-details">
+                            <div class="command-name">Run Build</div>
+                            <div class="wt-text-muted command-description">Build the current project</div>
+                        </div>
+                        <div class="wt-badge command-shortcut">Ctrl+B</div>
+                    </div>
+                    <div class="wt-list-item command-item" onclick="executeCommand('ai.chat')">
+                        <div class="command-icon">🤖</div>
+                        <div class="command-details">
+                            <div class="command-name">Focus AI Chat</div>
+                            <div class="wt-text-muted command-description">Focus the AI chat input</div>
+                        </div>
+                        <div class="wt-badge command-shortcut">Ctrl+3</div>
+                    </div>
+                    <div class="wt-list-item command-item" onclick="executeCommand('settings.open')">
+                        <div class="command-icon">⚙️</div>
+                        <div class="command-details">
+                            <div class="command-name">Open Settings</div>
+                            <div class="wt-text-muted command-description">Open the settings panel</div>
+                        </div>
+                        <div class="wt-badge command-shortcut">Ctrl+,</div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Settings Modal using WebTUI -->
+    <div class="modal-overlay" id="settingsModal">
+        <div class="wt-modal wt-modal-xl">
+            <div class="wt-modal-header">
+                <h4 class="wt-modal-title">Settings</h4>
+                <button class="wt-btn wt-btn-ghost wt-btn-sm" onclick="closeModal('settingsModal')">×</button>
+            </div>
+            <div class="wt-modal-body">
+                <div class="wt-tabs settings-nav">
+                    <div class="wt-tab wt-tab-active settings-tab" onclick="switchSettingsTab('llm')">LLM Providers</div>
+                    <div class="wt-tab settings-tab" onclick="switchSettingsTab('editor')">Editor</div>
+                    <div class="wt-tab settings-tab" onclick="switchSettingsTab('mcp')">MCP Tools</div>
+                    <div class="wt-tab settings-tab" onclick="switchSettingsTab('terminal')">Terminal</div>
+                </div>
+
+                <!-- LLM Providers Settings -->
+                <div class="settings-section active" id="llmSettings">
+                    <div id="providersContainer">
+                        <!-- Providers will be loaded dynamically -->
+                    </div>
+                </div>
+
+                <!-- Editor Settings -->
+                <div class="settings-section" id="editorSettings">
+                    <div class="wt-form-group setting-group">
+                        <label class="wt-label">Theme</label>
+                        <select class="wt-select" id="editorTheme">
+                            <option value="dark">Dark</option>
+                            <option value="light">Light</option>
+                        </select>
+                    </div>
+                    <div class="wt-form-group setting-group">
+                        <label class="wt-label">Font Size</label>
+                        <input type="number" class="wt-input" id="editorFontSize" value="14" min="10" max="24" />
+                    </div>
+                    <div class="wt-form-group setting-group">
+                        <label class="wt-label">Tab Size</label>
+                        <input type="number" class="wt-input" id="editorTabSize" value="4" min="2" max="8" />
+                    </div>
+                    <div class="wt-form-group setting-group">
+                        <label class="wt-label wt-checkbox">
+                            <input type="checkbox" id="editorWordWrap" checked />
+                            <span class="wt-checkmark"></span>
+                            Word Wrap
+                        </label>
+                    </div>
+                    <div class="wt-form-group setting-group">
+                        <label class="wt-label wt-checkbox">
+                            <input type="checkbox" id="editorLineNumbers" checked />
+                            <span class="wt-checkmark"></span>
+                            Line Numbers
+                        </label>
+                    </div>
+                </div>
+
+                <!-- MCP Tools Settings -->
+                <div class="settings-section" id="mcpSettings">
+                    <div class="setting-group">
+                        <label class="setting-label">
+                            <input type="checkbox" class="setting-checkbox" id="mcpAutoStart" checked />
+                            Auto-start MCP servers
+                        </label>
+                    </div>
+                    <div id="mcpServersContainer">
+                        <!-- MCP servers will be loaded dynamically -->
+                    </div>
+                </div>
+
+                <!-- Terminal Settings -->
+                <div class="settings-section" id="terminalSettings">
+                    <div class="wt-form-group setting-group">
+                        <label class="wt-label">Shell</label>
+                        <input type="text" class="wt-input" id="terminalShell" value="/bin/bash" />
+                    </div>
+                    <div class="wt-form-group setting-group">
+                        <label class="wt-label">Font Size</label>
+                        <input type="number" class="wt-input" id="terminalFontSize" value="12" min="8" max="20" />
+                    </div>
+                    <div class="wt-form-group setting-group">
+                        <label class="wt-label">Scrollback Lines</label>
+                        <input type="number" class="wt-input" id="terminalScrollback" value="1000" min="100" max="10000" />
+                    </div>
                 </div>
             </div>
         </div>
@@ -587,28 +860,45 @@ Use Ctrl+backtick to focus terminal, Ctrl+1 for files, Ctrl+2 for editor, Ctrl+3
         }
 
         function closeTab(filename) {
-            if (openTabs.length <= 1) return; // Keep at least one tab
-
             openTabs = openTabs.filter(tab => tab !== filename);
             document.getElementById(filename + 'Tab').remove();
 
             if (activeTab === filename) {
-                switchTab(openTabs[openTabs.length - 1]);
+                if (openTabs.length > 0) {
+                    switchTab(openTabs[openTabs.length - 1]);
+                } else {
+                    // No tabs left, show empty state
+                    activeTab = null;
+                    document.getElementById('codeEditor').value = '// No files open\n// Open a file from the file browser to start editing';
+                }
             }
         }
 
         function loadFileContent(filename) {
             const editor = document.getElementById('codeEditor');
 
-            // Placeholder content based on file type
-            const content = {
-                'README.md': '# CodeForge\\n\\nAI-powered coding assistant with multi-language support.\\n\\n## Features\\n- Multi-language build system\\n- AI integration\\n- LSP support\\n- Web interface',
-                'main.go': 'package main\\n\\nimport (\\n    "fmt"\\n)\\n\\nfunc main() {\\n    fmt.Println("Hello, CodeForge!")\\n}',
-                'config.yaml': '# CodeForge Configuration\\nworking_dir: "."\\n\\n# LLM Provider Configuration\\nllm:\\n  providers:\\n    - name: "anthropic"\\n      type: "anthropic"',
-                'welcome': '// Welcome to CodeForge!\\n// Open a file from the file browser or start a new conversation with AI.\\n\\npackage main\\n\\nimport (\\n    "fmt"\\n)\\n\\nfunc main() {\\n    fmt.Println("Hello, CodeForge!")\\n}'
-            };
+            if (filename === 'welcome') {
+                editor.value = '// Welcome to CodeForge!\\n// Open a file from the file browser or start a new conversation with AI.\\n\\npackage main\\n\\nimport (\\n    "fmt"\\n)\\n\\nfunc main() {\\n    fmt.Println("Hello, CodeForge!")\\n}';
+                return;
+            }
 
-            editor.value = content[filename] || '// New file: ' + filename;
+            // Load file content from API
+            fetch('/api/files', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ operation: 'read', path: filename })
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.success) {
+                    editor.value = data.data.content;
+                } else {
+                    editor.value = '// Error loading file: ' + data.error;
+                }
+            })
+            .catch(error => {
+                editor.value = '// Error loading file: ' + error.message;
+            });
         }
 
         // Chat functionality
@@ -621,10 +911,23 @@ Use Ctrl+backtick to focus terminal, Ctrl+1 for files, Ctrl+2 for editor, Ctrl+3
             addUserMessage(message);
             input.value = '';
 
-            // Send to AI (placeholder)
-            setTimeout(() => {
-                addAIMessage('I understand you want help with: "' + message + '". This is a placeholder response. The AI integration will provide real assistance here.');
-            }, 1000);
+            // Send to AI
+            fetch('/api/chat', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ message: message })
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.success) {
+                    addAIMessage(data.data.message);
+                } else {
+                    addAIMessage('Error: ' + data.error);
+                }
+            })
+            .catch(error => {
+                addAIMessage('Error: ' + error.message);
+            });
         }
 
         function addUserMessage(message) {
@@ -678,6 +981,136 @@ Use Ctrl+backtick to focus terminal, Ctrl+1 for files, Ctrl+2 for editor, Ctrl+3
             document.getElementById('mcpDot').className = 'status-dot ' + (status.mcp ? 'active' : 'warning');
         }
 
+        // Modal functions
+        function openCommandPalette() {
+            document.getElementById('commandPaletteModal').style.display = 'flex';
+            document.getElementById('commandInput').focus();
+        }
+
+        function openSettings() {
+            document.getElementById('settingsModal').style.display = 'flex';
+            loadProviders();
+            loadMCPServers();
+        }
+
+        function closeModal(modalId) {
+            document.getElementById(modalId).style.display = 'none';
+        }
+
+        function executeCommand(command) {
+            fetch('/api/commands', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ command: command })
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.success) {
+                    handleCommandAction(data.data.action);
+                }
+                closeModal('commandPaletteModal');
+            })
+            .catch(error => {
+                console.error('Command execution failed:', error);
+            });
+        }
+
+        function handleCommandAction(action) {
+            switch(action) {
+                case 'new_file':
+                    // Create new file logic
+                    break;
+                case 'save_file':
+                    // Save current file logic
+                    break;
+                case 'focus_chat':
+                    document.getElementById('chatInput').focus();
+                    break;
+                case 'open_settings':
+                    openSettings();
+                    break;
+            }
+        }
+
+        function switchSettingsTab(tab) {
+            // Update tab appearance
+            document.querySelectorAll('.settings-tab').forEach(t => t.classList.remove('active'));
+            document.querySelector('.settings-tab[onclick*="' + tab + '"]').classList.add('active');
+
+            // Update section visibility
+            document.querySelectorAll('.settings-section').forEach(s => s.classList.remove('active'));
+            document.getElementById(tab + 'Settings').classList.add('active');
+        }
+
+        function loadProviders() {
+            fetch('/api/providers')
+            .then(response => response.json())
+            .then(data => {
+                if (data.success) {
+                    renderProviders(data.data);
+                }
+            })
+            .catch(error => {
+                console.error('Failed to load providers:', error);
+            });
+        }
+
+        function renderProviders(providers) {
+            const container = document.getElementById('providersContainer');
+            container.innerHTML = '';
+
+            Object.entries(providers).forEach(([key, provider]) => {
+                const card = document.createElement('div');
+                card.className = 'provider-card';
+                card.innerHTML =
+                    '<div class="provider-header">' +
+                        '<div class="provider-name">' + provider.name + '</div>' +
+                        '<div class="provider-status ' + (provider.available ? 'available' : 'unavailable') + '">' +
+                            (provider.available ? 'Available' : 'Unavailable') +
+                        '</div>' +
+                    '</div>' +
+                    '<div class="model-list">' +
+                        provider.models.map(model =>
+                            '<div class="model-item">' +
+                                '<input type="radio" name="selectedModel" value="' + model.id + '" class="model-radio" />' +
+                                '<div class="model-name">' + model.name + '</div>' +
+                                '<div class="model-tokens">' + model.maxTokens.toLocaleString() + ' tokens</div>' +
+                            '</div>'
+                        ).join('') +
+                    '</div>';
+                container.appendChild(card);
+            });
+        }
+
+        function loadMCPServers() {
+            fetch('/api/mcp/tools')
+            .then(response => response.json())
+            .then(data => {
+                if (data.success) {
+                    renderMCPServers(data.data);
+                }
+            })
+            .catch(error => {
+                console.error('Failed to load MCP servers:', error);
+            });
+        }
+
+        function renderMCPServers(servers) {
+            const container = document.getElementById('mcpServersContainer');
+            container.innerHTML = '';
+
+            Object.entries(servers).forEach(([serverName, tools]) => {
+                const serverDiv = document.createElement('div');
+                serverDiv.className = 'setting-group';
+                serverDiv.innerHTML =
+                    '<label class="setting-label">' +
+                        '<input type="checkbox" class="setting-checkbox" checked />' +
+                        serverName + ' (' + tools.length + ' tools)' +
+                    '</label>';
+                container.appendChild(serverDiv);
+            });
+        }
+
         // Keyboard shortcuts
         document.addEventListener('keydown', function(e) {
             if (e.ctrlKey || e.metaKey) {
@@ -694,11 +1127,25 @@ Use Ctrl+backtick to focus terminal, Ctrl+1 for files, Ctrl+2 for editor, Ctrl+3
                         e.preventDefault();
                         document.getElementById('chatInput').focus();
                         break;
-                    case '`':
+                    case String.fromCharCode(96):
                         e.preventDefault();
                         document.querySelector('.terminal-content').focus();
                         break;
+                    case ',':
+                        e.preventDefault();
+                        openSettings();
+                        break;
                 }
+            }
+
+            if (e.ctrlKey && e.shiftKey && e.key === 'P') {
+                e.preventDefault();
+                openCommandPalette();
+            }
+
+            if (e.key === 'Escape') {
+                closeModal('commandPaletteModal');
+                closeModal('settingsModal');
             }
         });
 
@@ -833,37 +1280,167 @@ func (s *Server) handleBuild(w http.ResponseWriter, r *http.Request) {
 	s.sendSuccess(w, result)
 }
 
+// handleSettings handles settings operations
+func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case "GET":
+		// Return current settings
+		settings := map[string]interface{}{
+			"llm": map[string]interface{}{
+				"defaultProvider": "anthropic",
+				"defaultModel":    "claude-3-5-sonnet-20241022",
+				"temperature":     0.7,
+				"maxTokens":       4096,
+			},
+			"editor": map[string]interface{}{
+				"theme":       "dark",
+				"fontSize":    14,
+				"tabSize":     4,
+				"wordWrap":    true,
+				"lineNumbers": true,
+			},
+			"terminal": map[string]interface{}{
+				"shell":      "/bin/bash",
+				"fontSize":   12,
+				"scrollback": 1000,
+			},
+			"mcp": map[string]interface{}{
+				"autoStart":      true,
+				"enabledServers": []string{"filesystem"},
+			},
+		}
+		s.sendSuccess(w, settings)
+
+	case "POST":
+		var req SettingsRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			s.sendError(w, "Invalid request format", http.StatusBadRequest)
+			return
+		}
+
+		// In a real implementation, save settings to config file
+		fmt.Printf("Updating %s settings: %+v\n", req.Category, req.Settings)
+		s.sendSuccess(w, map[string]string{"status": "saved"})
+	}
+}
+
+// handleCommands handles command palette operations
+func (s *Server) handleCommands(w http.ResponseWriter, r *http.Request) {
+	var req CommandRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		s.sendError(w, "Invalid request format", http.StatusBadRequest)
+		return
+	}
+
+	// Execute command based on type
+	switch req.Command {
+	case "file.new":
+		s.sendSuccess(w, map[string]string{"action": "new_file"})
+	case "file.save":
+		s.sendSuccess(w, map[string]string{"action": "save_file"})
+	case "file.open":
+		s.sendSuccess(w, map[string]string{"action": "open_file"})
+	case "build.run":
+		s.sendSuccess(w, map[string]string{"action": "run_build"})
+	case "ai.chat":
+		s.sendSuccess(w, map[string]string{"action": "focus_chat"})
+	case "settings.open":
+		s.sendSuccess(w, map[string]string{"action": "open_settings"})
+	default:
+		s.sendError(w, "Unknown command", http.StatusBadRequest)
+	}
+}
+
+// handleProviders returns available LLM providers and models
+func (s *Server) handleProviders(w http.ResponseWriter, r *http.Request) {
+	providers := map[string]interface{}{
+		"anthropic": map[string]interface{}{
+			"name":      "Anthropic",
+			"available": true,
+			"models": []map[string]interface{}{
+				{"id": "claude-3-5-sonnet-20241022", "name": "Claude 3.5 Sonnet", "maxTokens": 200000},
+				{"id": "claude-3-5-haiku-20241022", "name": "Claude 3.5 Haiku", "maxTokens": 200000},
+			},
+		},
+		"openai": map[string]interface{}{
+			"name":      "OpenAI",
+			"available": true,
+			"models": []map[string]interface{}{
+				{"id": "gpt-4o", "name": "GPT-4o", "maxTokens": 128000},
+				{"id": "gpt-4o-mini", "name": "GPT-4o Mini", "maxTokens": 128000},
+			},
+		},
+		"groq": map[string]interface{}{
+			"name":      "Groq",
+			"available": false,
+			"models": []map[string]interface{}{
+				{"id": "llama-3.1-70b-versatile", "name": "Llama 3.1 70B", "maxTokens": 32768},
+			},
+		},
+	}
+
+	s.sendSuccess(w, providers)
+}
+
 // Helper functions for file operations
 func (s *Server) listFiles(dir string) ([]map[string]interface{}, error) {
-	// Placeholder implementation
-	files := []map[string]interface{}{
-		{"name": "README.md", "type": "file", "icon": "📄"},
-		{"name": "main.go", "type": "file", "icon": "🔧"},
-		{"name": "config.yaml", "type": "file", "icon": "⚙️"},
-		{"name": "internal/", "type": "directory", "icon": "📁"},
-		{"name": "cmd/", "type": "directory", "icon": "📁"},
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil, err
 	}
+
+	var files []map[string]interface{}
+	for _, entry := range entries {
+		// Skip hidden files
+		if strings.HasPrefix(entry.Name(), ".") {
+			continue
+		}
+
+		var icon string
+		fileType := "file"
+
+		if entry.IsDir() {
+			icon = "📁"
+			fileType = "directory"
+		} else {
+			switch {
+			case strings.HasSuffix(entry.Name(), ".go"):
+				icon = "🔧"
+			case strings.HasSuffix(entry.Name(), ".rs"):
+				icon = "🦀"
+			case strings.HasSuffix(entry.Name(), ".py"):
+				icon = "🐍"
+			case strings.HasSuffix(entry.Name(), ".js"), strings.HasSuffix(entry.Name(), ".ts"):
+				icon = "📜"
+			case strings.HasSuffix(entry.Name(), ".md"):
+				icon = "📄"
+			case strings.HasSuffix(entry.Name(), ".yaml"), strings.HasSuffix(entry.Name(), ".yml"):
+				icon = "⚙️"
+			default:
+				icon = "📄"
+			}
+		}
+
+		files = append(files, map[string]interface{}{
+			"name": entry.Name(),
+			"type": fileType,
+			"icon": icon,
+		})
+	}
+
 	return files, nil
 }
 
 func (s *Server) readFile(path string) (string, error) {
-	// Placeholder content based on file type
-	content := map[string]string{
-		"README.md":    "# CodeForge\n\nAI-powered coding assistant with multi-language support.\n\n## Features\n- Multi-language build system\n- AI integration\n- LSP support\n- Web interface",
-		"main.go":      "package main\n\nimport (\n    \"fmt\"\n)\n\nfunc main() {\n    fmt.Println(\"Hello, CodeForge!\")\n}",
-		"config.yaml":  "# CodeForge Configuration\nworking_dir: \".\"\n\n# LLM Provider Configuration\nllm:\n  providers:\n    - name: \"anthropic\"\n      type: \"anthropic\"",
+	content, err := os.ReadFile(path)
+	if err != nil {
+		return "", err
 	}
-
-	if c, exists := content[path]; exists {
-		return c, nil
-	}
-	return "// New file: " + path, nil
+	return string(content), nil
 }
 
 func (s *Server) writeFile(path, content string) error {
-	// Placeholder - in real implementation, write to actual file
-	fmt.Printf("Writing to %s: %d bytes\n", path, len(content))
-	return nil
+	return os.WriteFile(path, []byte(content), 0644)
 }
 
 // handleSearch handles semantic code search requests
