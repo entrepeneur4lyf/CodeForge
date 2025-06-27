@@ -15,7 +15,6 @@ import (
 	"github.com/entrepeneur4lyf/codeforge/internal/embeddings"
 	"github.com/entrepeneur4lyf/codeforge/internal/llm"
 	"github.com/entrepeneur4lyf/codeforge/internal/lsp"
-	"github.com/entrepeneur4lyf/codeforge/internal/mcp"
 	"github.com/entrepeneur4lyf/codeforge/internal/vectordb"
 	"github.com/gorilla/mux"
 	"github.com/gorilla/websocket"
@@ -1792,64 +1791,39 @@ func (s *Server) handleMCP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-
-	manager := mcp.GetManager()
-	if manager == nil {
-		s.sendError(w, "MCP manager not available", http.StatusServiceUnavailable)
-		return
+	// MCP is now a standalone server - provide information about capabilities
+	response := map[string]interface{}{
+		"message": "MCP is now a standalone server. Use 'codeforge mcp server' to start it.",
+		"capabilities": map[string]interface{}{
+			"tools":     []string{"semantic_search", "read_file", "write_file", "analyze_code", "get_project_structure"},
+			"resources": []string{"codeforge://project/metadata", "codeforge://files/{path}", "codeforge://git/status"},
+			"prompts":   []string{"code_review", "debug_help", "refactoring_guide", "documentation_help", "testing_help"},
+		},
 	}
 
-	switch req.Operation {
-	case "call":
-		result, err := manager.CallToolByName(ctx, req.ToolName, req.Args)
-		if err != nil {
-			s.sendError(w, fmt.Sprintf("Tool call failed: %v", err), http.StatusInternalServerError)
-			return
-		}
-		s.sendSuccess(w, result)
-
-	case "read":
-		client := manager.GetClient(req.Server)
-		if client == nil {
-			s.sendError(w, "MCP server not found", http.StatusNotFound)
-			return
-		}
-
-		content, err := client.ReadResource(ctx, req.URI)
-		if err != nil {
-			s.sendError(w, fmt.Sprintf("Resource read failed: %v", err), http.StatusInternalServerError)
-			return
-		}
-		s.sendSuccess(w, content)
-
-	default:
-		s.sendError(w, "Unknown MCP operation", http.StatusBadRequest)
-	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(response)
 }
 
 // handleMCPTools returns available MCP tools
 func (s *Server) handleMCPTools(w http.ResponseWriter, r *http.Request) {
-	manager := mcp.GetManager()
-	if manager == nil {
-		s.sendError(w, "MCP manager not available", http.StatusServiceUnavailable)
-		return
+	tools := []map[string]interface{}{
+		{"name": "semantic_search", "description": "Search for code using semantic similarity"},
+		{"name": "read_file", "description": "Read file contents from the workspace"},
+		{"name": "write_file", "description": "Write content to files in the workspace"},
+		{"name": "analyze_code", "description": "Analyze code structure and extract symbols"},
+		{"name": "get_project_structure", "description": "Get directory structure of the project"},
 	}
-
-	tools := manager.GetAllTools()
 	s.sendSuccess(w, tools)
 }
 
 // handleMCPResources returns available MCP resources
 func (s *Server) handleMCPResources(w http.ResponseWriter, r *http.Request) {
-	manager := mcp.GetManager()
-	if manager == nil {
-		s.sendError(w, "MCP manager not available", http.StatusServiceUnavailable)
-		return
+	resources := []map[string]interface{}{
+		{"uri": "codeforge://project/metadata", "description": "Project information"},
+		{"uri": "codeforge://files/{path}", "description": "File content access"},
+		{"uri": "codeforge://git/status", "description": "Git repository status"},
 	}
-
-	resources := manager.GetAllResources()
 	s.sendSuccess(w, resources)
 }
 
@@ -1859,7 +1833,7 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 		"embedding": embeddings.GetNative() != nil && embeddings.GetNative().IsInitialized(),
 		"vectordb":  vectordb.Get() != nil,
 		"lsp":       lsp.GetManager() != nil,
-		"mcp":       mcp.GetManager() != nil,
+		"mcp":       true, // MCP server is available as standalone
 		"timestamp": time.Now().Unix(),
 	}
 
@@ -1885,7 +1859,7 @@ func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 			"embedding": embeddings.GetNative() != nil && embeddings.GetNative().IsInitialized(),
 			"vectordb":  vectordb.Get() != nil,
 			"lsp":       lsp.GetManager() != nil,
-			"mcp":       mcp.GetManager() != nil,
+			"mcp":       true, // MCP server is available as standalone
 		},
 	}
 	conn.WriteJSON(status)

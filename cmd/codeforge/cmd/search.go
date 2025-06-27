@@ -66,10 +66,13 @@ var searchCmd = &cobra.Command{
 
 		fmt.Printf("Found %d results for query: %s\n\n", len(results), query)
 		for i, result := range results {
-			fmt.Printf("Result %d (Similarity: %.3f):\n", i+1, result.Similarity)
-			fmt.Printf("%s\n", result.Content)
-			if result.Metadata != "" && result.Metadata != "{}" {
-				fmt.Printf("Metadata: %s\n", result.Metadata)
+			fmt.Printf("Result %d (Score: %.3f):\n", i+1, result.Score)
+			fmt.Printf("File: %s\n", result.Chunk.FilePath)
+			fmt.Printf("Type: %s\n", result.Chunk.ChunkType.Type)
+			fmt.Printf("Language: %s\n", result.Chunk.Language)
+			fmt.Printf("Content:\n%s\n", result.Chunk.Content)
+			if len(result.Chunk.Metadata) > 0 {
+				fmt.Printf("Metadata: %+v\n", result.Chunk.Metadata)
 			}
 			fmt.Println("---")
 		}

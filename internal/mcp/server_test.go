@@ -90,7 +90,7 @@ func main() {
 	// Test read_file tool
 	t.Run("read_file", func(t *testing.T) {
 		request := mcp.CallToolRequest{
-			Params: mcp.CallToolRequestParams{
+			Params: mcp.CallToolParams{
 				Name: "read_file",
 				Arguments: map[string]interface{}{
 					"path": "test.go",
@@ -118,7 +118,7 @@ func main() {
 	// Test write_file tool
 	t.Run("write_file", func(t *testing.T) {
 		request := mcp.CallToolRequest{
-			Params: mcp.CallToolRequestParams{
+			Params: mcp.CallToolParams{
 				Name: "write_file",
 				Arguments: map[string]interface{}{
 					"path":    "new_test.go",
@@ -148,7 +148,7 @@ func main() {
 	// Test get_project_structure tool
 	t.Run("get_project_structure", func(t *testing.T) {
 		request := mcp.CallToolRequest{
-			Params: mcp.CallToolRequestParams{
+			Params: mcp.CallToolParams{
 				Name: "get_project_structure",
 				Arguments: map[string]interface{}{
 					"path":      ".",
@@ -172,7 +172,7 @@ func main() {
 	// Test semantic_search tool
 	t.Run("semantic_search", func(t *testing.T) {
 		request := mcp.CallToolRequest{
-			Params: mcp.CallToolRequestParams{
+			Params: mcp.CallToolParams{
 				Name: "semantic_search",
 				Arguments: map[string]interface{}{
 					"query":       "hello world function",
@@ -224,7 +224,7 @@ func TestCodeForgeServer_Resources(t *testing.T) {
 	// Test project metadata resource
 	t.Run("project_metadata", func(t *testing.T) {
 		request := mcp.ReadResourceRequest{
-			Params: mcp.ReadResourceRequestParams{
+			Params: mcp.ReadResourceParams{
 				URI: "codeforge://project/metadata",
 			},
 		}
@@ -244,7 +244,7 @@ func TestCodeForgeServer_Resources(t *testing.T) {
 	// Test git status resource
 	t.Run("git_status", func(t *testing.T) {
 		request := mcp.ReadResourceRequest{
-			Params: mcp.ReadResourceRequestParams{
+			Params: mcp.ReadResourceParams{
 				URI: "codeforge://git/status",
 			},
 		}

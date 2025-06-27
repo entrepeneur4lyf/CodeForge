@@ -8,7 +8,6 @@ import (
 	"github.com/entrepeneur4lyf/codeforge/internal/embeddings"
 	"github.com/entrepeneur4lyf/codeforge/internal/llm"
 	"github.com/entrepeneur4lyf/codeforge/internal/lsp"
-	"github.com/entrepeneur4lyf/codeforge/internal/mcp"
 	"github.com/entrepeneur4lyf/codeforge/internal/vectordb"
 	"github.com/spf13/cobra"
 )
@@ -53,10 +52,7 @@ Features:
 			return fmt.Errorf("failed to initialize LSP clients: %w", err)
 		}
 
-		// Initialize MCP manager
-		if err := mcp.Initialize(cfg); err != nil {
-			return fmt.Errorf("failed to initialize MCP clients: %w", err)
-		}
+		// MCP server is now standalone - no initialization needed here
 
 		// Initialize vector database
 		if err := vectordb.Initialize(cfg); err != nil {

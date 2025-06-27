@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"context"
+	"crypto/sha256"
 	"fmt"
 	"log"
 	"os"
@@ -107,19 +108,37 @@ func indexFile(ctx context.Context, vdb *vectordb.VectorDB, filePath string) err
 		embedding = createSimpleEmbedding(string(content))
 	}
 
-	// Create code embedding
-	codeEmbedding := &vectordb.CodeEmbedding{
-		FilePath:  filePath,
-		Content:   string(content),
-		Language:  language,
-		Embedding: embedding,
-		Metadata:  fmt.Sprintf(`{"file_size": %d, "lines": %d, "embedding_type": "model2vec"}`, len(content), strings.Count(string(content), "\n")+1),
+	// Create code chunk
+	codeChunk := &vectordb.CodeChunk{
+		ID:       fmt.Sprintf("%x", sha256.Sum256([]byte(filePath+string(content)))),
+		FilePath: filePath,
+		Content:  string(content),
+		ChunkType: vectordb.ChunkType{
+			Type: "file",
+			Data: map[string]interface{}{
+				"full_file": true,
+			},
+		},
+		Language: language,
+		Symbols:  []vectordb.Symbol{},
+		Imports:  []string{},
+		Location: vectordb.SourceLocation{
+			StartLine:   1,
+			EndLine:     strings.Count(string(content), "\n") + 1,
+			StartColumn: 1,
+			EndColumn:   1,
+		},
+		Metadata: map[string]string{
+			"file_size":      fmt.Sprintf("%d", len(content)),
+			"lines":          fmt.Sprintf("%d", strings.Count(string(content), "\n")+1),
+			"embedding_type": "model2vec",
+		},
 		CreatedAt: time.Now(),
 		UpdatedAt: time.Now(),
 	}
 
 	// Store in database
-	return vdb.StoreCodeEmbedding(ctx, codeEmbedding)
+	return vdb.StoreChunk(ctx, codeChunk, embedding)
 }
 
 func isCodeFile(filePath string) bool {

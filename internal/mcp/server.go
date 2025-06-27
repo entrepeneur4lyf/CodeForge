@@ -253,6 +253,11 @@ func (cfs *CodeForgeServer) validatePath(path string) (string, error) {
 	// Clean the path
 	cleanPath := filepath.Clean(path)
 
+	// Reject absolute paths that don't start with workspace
+	if filepath.IsAbs(cleanPath) {
+		return "", fmt.Errorf("absolute paths are not allowed: %s", path)
+	}
+
 	// Resolve relative to workspace root
 	fullPath := filepath.Join(cfs.workspaceRoot, cleanPath)
 
@@ -267,7 +272,8 @@ func (cfs *CodeForgeServer) validatePath(path string) (string, error) {
 		return "", fmt.Errorf("failed to resolve file path: %w", err)
 	}
 
-	if !strings.HasPrefix(absPath, absWorkspace) {
+	// Ensure the resolved path is still within workspace (prevents path traversal)
+	if !strings.HasPrefix(absPath+string(filepath.Separator), absWorkspace+string(filepath.Separator)) {
 		return "", fmt.Errorf("path is outside workspace: %s", path)
 	}
 
