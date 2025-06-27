@@ -96,6 +96,42 @@ func (cm *ChatModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	var cmds []tea.Cmd
 
 	switch msg := msg.(type) {
+	case tea.MouseMsg:
+		if !cm.focused {
+			return cm, nil
+		}
+
+		// Handle mouse events in chat area
+		switch msg.Action {
+		case tea.MouseActionPress:
+			if msg.Button == tea.MouseButtonLeft {
+				// Check if click is in input area (bottom of chat)
+				inputY := cm.height - 3 // Input is typically at the bottom
+				if msg.Y >= inputY {
+					log.Debug("Mouse click in chat input area", "x", msg.X, "y", msg.Y)
+					// Focus the input and forward mouse event
+					var cmd tea.Cmd
+					cm.input, cmd = cm.input.Update(msg)
+					if cmd != nil {
+						cmds = append(cmds, cmd)
+					}
+				} else {
+					log.Debug("Mouse click in chat messages area", "x", msg.X, "y", msg.Y)
+					// Click in messages area - could be used for message selection later
+				}
+			}
+		case tea.MouseActionMotion:
+			if msg.Button == tea.MouseButtonWheelUp {
+				// Handle scroll up
+				log.Debug("Mouse scroll up in chat")
+				cm.viewport.LineUp(3)
+			} else if msg.Button == tea.MouseButtonWheelDown {
+				// Handle scroll down
+				log.Debug("Mouse scroll down in chat")
+				cm.viewport.LineDown(3)
+			}
+		}
+
 	case tea.KeyMsg:
 		if !cm.focused {
 			return cm, nil
@@ -304,30 +340,42 @@ func (cm *ChatModel) updateViewport() {
 	cm.viewport.GotoBottom()
 }
 
-// updateSizes updates component sizes based on available space
+// updateSizes updates component sizes based on available space (responsive)
 func (cm *ChatModel) updateSizes() {
 	if cm.width <= 0 || cm.height <= 0 {
 		return
 	}
 
-	// Calculate viewport height (total - input area - padding)
-	viewportHeight := cm.height - cm.inputHeight - 6 // 6 for input styling and help
-	if viewportHeight < 5 {
-		viewportHeight = 5
+	// Responsive padding based on terminal size
+	var padding int
+	if cm.width < 60 {
+		padding = 2 // Minimal padding for small terminals
+	} else if cm.width < 100 {
+		padding = 4 // Standard padding
+	} else {
+		padding = 6 // More padding for large terminals
 	}
 
-	// Update viewport
-	cm.viewport.Width = cm.width - 4 // Account for padding
+	// Calculate viewport height (total - input area - padding)
+	viewportHeight := cm.height - cm.inputHeight - padding - 2 // 2 for help text
+	if viewportHeight < 3 {
+		viewportHeight = 3 // Absolute minimum
+	}
+
+	// Update viewport with responsive dimensions
+	cm.viewport.Width = max(20, cm.width-padding) // Minimum 20 chars
 	cm.viewport.Height = viewportHeight
 
-	// Update input
-	cm.input.SetWidth(cm.width - 8) // Account for border and padding
+	// Update input with responsive width
+	inputWidth := max(10, cm.width-padding-4) // Minimum 10 chars
+	cm.input.SetWidth(inputWidth)
 
-	// Update glamour renderer width
+	// Update glamour renderer width (responsive word wrap)
 	if cm.renderer != nil {
+		wrapWidth := max(40, cm.width-padding-4) // Minimum 40 chars for readability
 		newRenderer, err := glamour.NewTermRenderer(
 			glamour.WithAutoStyle(),
-			glamour.WithWordWrap(cm.width-8),
+			glamour.WithWordWrap(wrapWidth),
 		)
 		if err == nil {
 			cm.renderer = newRenderer
@@ -367,6 +415,14 @@ func (cm *ChatModel) GetMessages() []Message {
 // min returns the minimum of two integers
 func min(a, b int) int {
 	if a < b {
+		return a
+	}
+	return b
+}
+
+// max returns the maximum of two integers
+func max(a, b int) int {
+	if a > b {
 		return a
 	}
 	return b

@@ -295,7 +295,7 @@ func (psd *ProviderSettingsDialog) View() string {
 		help,
 	)
 
-	return styles.DialogStyle().
+	return styles.DialogStyle(psd.width, psd.height).
 		Width(psd.width - 4).
 		Height(psd.height - 4).
 		Render(content)

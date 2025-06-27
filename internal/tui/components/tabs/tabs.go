@@ -291,16 +291,32 @@ func (tm *TabManager) renderTabBar() string {
 		Render(tabContent)
 }
 
-// updateActiveStates updates the active state of all tabs
+// updateActiveStates updates the active state of all tabs and manages focus
 func (tm *TabManager) updateActiveStates() {
 	for i := range tm.tabs {
 		tm.tabs[i].Active = i == tm.activeTab
+
+		// Set focus on the active tab content if tab manager is focused
+		if focusable, ok := tm.tabs[i].Content.(interface {
+			SetFocused(bool)
+		}); ok {
+			focusable.SetFocused(tm.focused && i == tm.activeTab)
+		}
 	}
 }
 
-// SetFocused sets the focus state
+// SetFocused sets the focus state and propagates to active tab content
 func (tm *TabManager) SetFocused(focused bool) {
 	tm.focused = focused
+
+	// Propagate focus to active tab content if it supports focus
+	if activeTab := tm.GetActiveTab(); activeTab != nil {
+		if focusable, ok := activeTab.Content.(interface {
+			SetFocused(bool)
+		}); ok {
+			focusable.SetFocused(focused)
+		}
+	}
 }
 
 // SetAnimationValue sets the current animation value
@@ -318,13 +334,20 @@ func (tm *TabManager) GetTabCount() int {
 	return len(tm.tabs)
 }
 
-// SetSize sets the dimensions
+// SetSize sets the dimensions (responsive)
 func (tm *TabManager) SetSize(width, height int) {
 	tm.width = width
 	tm.height = height
 
-	// Update size for all tab contents
+	// Calculate responsive content area
 	contentHeight := tm.height - tm.tabHeight
+
+	// Ensure minimum usable space
+	if contentHeight < 5 {
+		contentHeight = 5
+	}
+
+	// Update size for all tab contents
 	for i := range tm.tabs {
 		if sizeable, ok := tm.tabs[i].Content.(interface {
 			SetSize(width, height int)

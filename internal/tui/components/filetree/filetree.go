@@ -41,6 +41,7 @@ type FileTreeModel struct {
 	showHidden   bool
 	gitStatus    map[string]string
 	gitignore    *ignore.GitIgnore
+	scrollOffset int // For scrolling support
 }
 
 // FileSelectedMsg is sent when a file is selected
@@ -208,6 +209,36 @@ func (m *FileTreeModel) getCodeFileIcon(path string) string {
 	}
 }
 
+// adjustScrollOffset adjusts the scroll offset to keep the cursor visible
+func (m *FileTreeModel) adjustScrollOffset() {
+	// Calculate available space for file list (subtract header and padding)
+	availableHeight := m.height - 4 // Header + padding + modified files section
+	if availableHeight <= 0 {
+		return
+	}
+
+	// Ensure cursor is visible within the scroll window
+	if m.cursor < m.scrollOffset {
+		m.scrollOffset = m.cursor
+	} else if m.cursor >= m.scrollOffset+availableHeight {
+		m.scrollOffset = m.cursor - availableHeight + 1
+	}
+
+	// Ensure scroll offset doesn't go negative
+	if m.scrollOffset < 0 {
+		m.scrollOffset = 0
+	}
+
+	// Ensure scroll offset doesn't exceed the maximum
+	maxOffset := len(m.visibleNodes) - availableHeight
+	if maxOffset < 0 {
+		maxOffset = 0
+	}
+	if m.scrollOffset > maxOffset {
+		m.scrollOffset = maxOffset
+	}
+}
+
 // Init implements tea.Model
 func (m *FileTreeModel) Init() tea.Cmd {
 	return nil
@@ -225,11 +256,45 @@ func (m *FileTreeModel) Update(msg tea.Msg) (*FileTreeModel, tea.Cmd) {
 		case key.Matches(msg, key.NewBinding(key.WithKeys("up", "k"))):
 			if m.cursor > 0 {
 				m.cursor--
+				m.adjustScrollOffset()
 			}
 		case key.Matches(msg, key.NewBinding(key.WithKeys("down", "j"))):
 			if m.cursor < len(m.visibleNodes)-1 {
 				m.cursor++
+				m.adjustScrollOffset()
 			}
+		case key.Matches(msg, key.NewBinding(key.WithKeys("pgup"))):
+			pageSize := m.height - 4
+			if pageSize <= 0 {
+				pageSize = 1
+			}
+			m.cursor -= pageSize
+			if m.cursor < 0 {
+				m.cursor = 0
+			}
+			m.adjustScrollOffset()
+		case key.Matches(msg, key.NewBinding(key.WithKeys("pgdown"))):
+			pageSize := m.height - 4
+			if pageSize <= 0 {
+				pageSize = 1
+			}
+			m.cursor += pageSize
+			if m.cursor >= len(m.visibleNodes) {
+				m.cursor = len(m.visibleNodes) - 1
+			}
+			if m.cursor < 0 {
+				m.cursor = 0
+			}
+			m.adjustScrollOffset()
+		case key.Matches(msg, key.NewBinding(key.WithKeys("home"))):
+			m.cursor = 0
+			m.adjustScrollOffset()
+		case key.Matches(msg, key.NewBinding(key.WithKeys("end"))):
+			m.cursor = len(m.visibleNodes) - 1
+			if m.cursor < 0 {
+				m.cursor = 0
+			}
+			m.adjustScrollOffset()
 		case key.Matches(msg, key.NewBinding(key.WithKeys("enter"))):
 			if m.cursor < len(m.visibleNodes) {
 				node := m.visibleNodes[m.cursor]
@@ -286,14 +351,35 @@ func (m *FileTreeModel) View() string {
 	lines = append(lines, header)
 	lines = append(lines, "")
 
-	// File tree
-	for i, node := range m.visibleNodes {
-		if i >= m.height-4 { // Leave space for header and modified files
+	// File tree with scrolling
+	availableHeight := m.height - 4 // Leave space for header and modified files
+	if availableHeight <= 0 {
+		availableHeight = 1
+	}
+
+	endIndex := m.scrollOffset + availableHeight
+	if endIndex > len(m.visibleNodes) {
+		endIndex = len(m.visibleNodes)
+	}
+
+	for i := m.scrollOffset; i < endIndex; i++ {
+		if i >= len(m.visibleNodes) {
 			break
 		}
 
+		node := m.visibleNodes[i]
 		line := m.renderNode(node, i == m.cursor)
 		lines = append(lines, line)
+	}
+
+	// Add scroll indicators if needed
+	if len(m.visibleNodes) > availableHeight {
+		if m.scrollOffset > 0 {
+			lines[1] = "↑ " + lines[1] // Add up arrow to indicate more content above
+		}
+		if endIndex < len(m.visibleNodes) {
+			lines = append(lines, "↓ More files...") // Add down arrow to indicate more content below
+		}
 	}
 
 	// Modified files section
@@ -316,10 +402,21 @@ func (m *FileTreeModel) View() string {
 
 	content := strings.Join(lines, "\n")
 
-	return styles.SidebarStyle().
+	// Ensure content fits within the allocated space
+	style := styles.SidebarStyle().
 		Width(m.width).
-		Height(m.height).
-		Render(content)
+		Height(m.height)
+
+	// Add border and focus styling
+	if m.focused {
+		style = style.BorderStyle(lipgloss.RoundedBorder()).
+			BorderForeground(t.Primary())
+	} else {
+		style = style.BorderStyle(lipgloss.RoundedBorder()).
+			BorderForeground(t.Border())
+	}
+
+	return style.Render(content)
 }
 
 // renderNode renders a single tree node

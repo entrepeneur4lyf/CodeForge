@@ -96,7 +96,7 @@ Example:
 		p := tea.NewProgram(
 			app,
 			tea.WithAltScreen(),
-			tea.WithMouseCellMotion(),
+			// Mouse support removed - was interfering with keyboard input
 		)
 
 		// Run the program
