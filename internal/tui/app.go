@@ -802,16 +802,19 @@ func (app *AppModel) sendToAI(message string) tea.Cmd {
 		}
 
 		// Create completion request
+		temp := 0.7
 		req := llm.CompletionRequest{
-			Model: agent.Model,
+			Model: string(agent.Model),
 			Messages: []llm.Message{
 				{
-					Role:    "user",
-					Content: message,
+					Role: "user",
+					Content: []llm.ContentBlock{
+						llm.TextBlock{Text: message},
+					},
 				},
 			},
-			MaxTokens:   agent.MaxTokens,
-			Temperature: 0.7,
+			MaxTokens:   int(agent.MaxTokens),
+			Temperature: &temp,
 		}
 
 		// Create context with timeout

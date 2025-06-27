@@ -41,11 +41,7 @@ var buildCmd = &cobra.Command{
 			}
 
 			// Get the default model for code fixing
-			defaultModel, err := llm.GetDefaultModel()
-			if err != nil {
-				fmt.Printf("Error getting default model: %s\n", err)
-				return
-			}
+			defaultModel := llm.GetDefaultModel()
 
 			prompt := fmt.Sprintf(
 				"The following Go code in file '%s' failed to build. Please provide only the corrected code, without any explanation.\n\nFile Content:\n```go\n%s\n```\n\nError:\n%s\n",
@@ -53,16 +49,19 @@ var buildCmd = &cobra.Command{
 			)
 
 			// Create completion request
+			temp := 0.1
 			req := llm.CompletionRequest{
 				Model: defaultModel.ID,
 				Messages: []llm.Message{
 					{
-						Role:    "user",
-						Content: prompt,
+						Role: "user",
+						Content: []llm.ContentBlock{
+							llm.TextBlock{Text: prompt},
+						},
 					},
 				},
-				MaxTokens:   defaultModel.DefaultMaxTokens,
-				Temperature: 0.1, // Low temperature for code fixing
+				MaxTokens:   defaultModel.Info.MaxTokens,
+				Temperature: &temp, // Low temperature for code fixing
 			}
 
 			fix, err := llm.GetCompletion(context.Background(), req)

@@ -1318,23 +1318,22 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 
 	// Get the default model
-	defaultModel, err := llm.GetDefaultModel()
-	if err != nil {
-		s.sendError(w, fmt.Sprintf("Failed to get default model: %v", err), http.StatusInternalServerError)
-		return
-	}
+	defaultModel := llm.GetDefaultModel()
 
 	// Create completion request
+	temp := 0.7
 	completionReq := llm.CompletionRequest{
 		Model: defaultModel.ID,
 		Messages: []llm.Message{
 			{
-				Role:    "user",
-				Content: req.Message,
+				Role: "user",
+				Content: []llm.ContentBlock{
+					llm.TextBlock{Text: req.Message},
+				},
 			},
 		},
-		MaxTokens:   defaultModel.DefaultMaxTokens,
-		Temperature: 0.7,
+		MaxTokens:   defaultModel.Info.MaxTokens,
+		Temperature: &temp,
 	}
 
 	// Get completion

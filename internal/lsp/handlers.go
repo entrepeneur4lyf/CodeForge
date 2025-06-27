@@ -400,6 +400,247 @@ func (c *Client) Rename(ctx context.Context, filepath string, line, character in
 	return &result, nil
 }
 
+// GetSignatureHelp requests signature help at a specific position
+func (c *Client) GetSignatureHelp(ctx context.Context, filepath string, line, character int) (*protocol.SignatureHelp, error) {
+	uri := fmt.Sprintf("file://%s", filepath)
+
+	params := protocol.SignatureHelpParams{
+		TextDocumentPositionParams: protocol.TextDocumentPositionParams{
+			TextDocument: protocol.TextDocumentIdentifier{
+				URI: protocol.DocumentURI(uri),
+			},
+			Position: protocol.Position{
+				Line:      uint32(line),
+				Character: uint32(character),
+			},
+		},
+	}
+
+	var result protocol.SignatureHelp
+	if err := c.Call(ctx, "textDocument/signatureHelp", params, &result); err != nil {
+		return nil, fmt.Errorf("signature help failed: %w", err)
+	}
+
+	return &result, nil
+}
+
+// UpdateFileContent updates the content of an open file and notifies the LSP server
+func (c *Client) UpdateFileContent(ctx context.Context, filepath string, content []byte) error {
+	uri := fmt.Sprintf("file://%s", filepath)
+
+	c.openFilesMu.Lock()
+	fileInfo, exists := c.openFiles[uri]
+	if !exists {
+		c.openFilesMu.Unlock()
+		return fmt.Errorf("file not open: %s", filepath)
+	}
+
+	// Increment version
+	fileInfo.Version++
+	version := fileInfo.Version
+	fileInfo.Content = string(content)
+	c.openFilesMu.Unlock()
+
+	params := protocol.DidChangeTextDocumentParams{
+		TextDocument: protocol.VersionedTextDocumentIdentifier{
+			TextDocumentIdentifier: protocol.TextDocumentIdentifier{
+				URI: protocol.DocumentURI(uri),
+			},
+			Version: version,
+		},
+		ContentChanges: []protocol.TextDocumentContentChangeEvent{
+			{
+				Text: string(content),
+			},
+		},
+	}
+
+	return c.Notify(ctx, "textDocument/didChange", params)
+}
+
+// SaveFile notifies the LSP server that a file has been saved
+func (c *Client) SaveFile(ctx context.Context, filepath string, content []byte) error {
+	uri := fmt.Sprintf("file://%s", filepath)
+
+	// First update the content if the file is open
+	if c.IsFileOpen(filepath) {
+		if err := c.UpdateFileContent(ctx, filepath, content); err != nil {
+			return fmt.Errorf("failed to update file content: %w", err)
+		}
+	}
+
+	// Send didSave notification
+	params := protocol.DidSaveTextDocumentParams{
+		TextDocument: protocol.TextDocumentIdentifier{
+			URI: protocol.DocumentURI(uri),
+		},
+		Text: string(content),
+	}
+
+	return c.Notify(ctx, "textDocument/didSave", params)
+}
+
+// WillSaveFile notifies the LSP server that a file is about to be saved
+func (c *Client) WillSaveFile(ctx context.Context, filepath string, reason protocol.TextDocumentSaveReason) error {
+	uri := fmt.Sprintf("file://%s", filepath)
+
+	params := protocol.WillSaveTextDocumentParams{
+		TextDocument: protocol.TextDocumentIdentifier{
+			URI: protocol.DocumentURI(uri),
+		},
+		Reason: reason,
+	}
+
+	return c.Notify(ctx, "textDocument/willSave", params)
+}
+
+// GetFormattingEdits requests document formatting
+func (c *Client) GetFormattingEdits(ctx context.Context, filepath string, options protocol.FormattingOptions) ([]protocol.TextEdit, error) {
+	uri := fmt.Sprintf("file://%s", filepath)
+
+	params := protocol.DocumentFormattingParams{
+		TextDocument: protocol.TextDocumentIdentifier{
+			URI: protocol.DocumentURI(uri),
+		},
+		Options: options,
+	}
+
+	var result []protocol.TextEdit
+	if err := c.Call(ctx, "textDocument/formatting", params, &result); err != nil {
+		return nil, fmt.Errorf("formatting failed: %w", err)
+	}
+
+	return result, nil
+}
+
+// GetRangeFormattingEdits requests range formatting
+func (c *Client) GetRangeFormattingEdits(ctx context.Context, filepath string, startLine, startChar, endLine, endChar int, options protocol.FormattingOptions) ([]protocol.TextEdit, error) {
+	uri := fmt.Sprintf("file://%s", filepath)
+
+	params := protocol.DocumentRangeFormattingParams{
+		TextDocument: protocol.TextDocumentIdentifier{
+			URI: protocol.DocumentURI(uri),
+		},
+		Range: protocol.Range{
+			Start: protocol.Position{
+				Line:      uint32(startLine),
+				Character: uint32(startChar),
+			},
+			End: protocol.Position{
+				Line:      uint32(endLine),
+				Character: uint32(endChar),
+			},
+		},
+		Options: options,
+	}
+
+	var result []protocol.TextEdit
+	if err := c.Call(ctx, "textDocument/rangeFormatting", params, &result); err != nil {
+		return nil, fmt.Errorf("range formatting failed: %w", err)
+	}
+
+	return result, nil
+}
+
+// GetOnTypeFormattingEdits requests on-type formatting
+func (c *Client) GetOnTypeFormattingEdits(ctx context.Context, filepath string, line, character int, ch string, options protocol.FormattingOptions) ([]protocol.TextEdit, error) {
+	uri := fmt.Sprintf("file://%s", filepath)
+
+	params := protocol.DocumentOnTypeFormattingParams{
+		TextDocument: protocol.TextDocumentIdentifier{
+			URI: protocol.DocumentURI(uri),
+		},
+		Position: protocol.Position{
+			Line:      uint32(line),
+			Character: uint32(character),
+		},
+		Ch:      ch,
+		Options: options,
+	}
+
+	var result []protocol.TextEdit
+	if err := c.Call(ctx, "textDocument/onTypeFormatting", params, &result); err != nil {
+		return nil, fmt.Errorf("on-type formatting failed: %w", err)
+	}
+
+	return result, nil
+}
+
+// GetDocumentLinks requests document links for a file
+func (c *Client) GetDocumentLinks(ctx context.Context, filepath string) ([]protocol.DocumentLink, error) {
+	uri := fmt.Sprintf("file://%s", filepath)
+
+	params := protocol.DocumentLinkParams{
+		TextDocument: protocol.TextDocumentIdentifier{
+			URI: protocol.DocumentURI(uri),
+		},
+	}
+
+	var result []protocol.DocumentLink
+	if err := c.Call(ctx, "textDocument/documentLink", params, &result); err != nil {
+		return nil, fmt.Errorf("document links failed: %w", err)
+	}
+
+	return result, nil
+}
+
+// GetFoldingRanges requests folding ranges for a file
+func (c *Client) GetFoldingRanges(ctx context.Context, filepath string) ([]protocol.FoldingRange, error) {
+	uri := fmt.Sprintf("file://%s", filepath)
+
+	params := protocol.FoldingRangeParams{
+		TextDocumentPositionParams: protocol.TextDocumentPositionParams{
+			TextDocument: protocol.TextDocumentIdentifier{
+				URI: protocol.DocumentURI(uri),
+			},
+		},
+	}
+
+	var result []protocol.FoldingRange
+	if err := c.Call(ctx, "textDocument/foldingRange", params, &result); err != nil {
+		return nil, fmt.Errorf("folding ranges failed: %w", err)
+	}
+
+	return result, nil
+}
+
+// GetSelectionRanges requests selection ranges for positions in a file
+func (c *Client) GetSelectionRanges(ctx context.Context, filepath string, positions []protocol.Position) ([]protocol.SelectionRange, error) {
+	uri := fmt.Sprintf("file://%s", filepath)
+
+	params := protocol.SelectionRangeParams{
+		TextDocument: protocol.TextDocumentIdentifier{
+			URI: protocol.DocumentURI(uri),
+		},
+		Positions: positions,
+	}
+
+	var result []protocol.SelectionRange
+	if err := c.Call(ctx, "textDocument/selectionRange", params, &result); err != nil {
+		return nil, fmt.Errorf("selection ranges failed: %w", err)
+	}
+
+	return result, nil
+}
+
+// GetSemanticTokens requests semantic tokens for a file
+func (c *Client) GetSemanticTokens(ctx context.Context, filepath string) (*protocol.SemanticTokens, error) {
+	uri := fmt.Sprintf("file://%s", filepath)
+
+	params := protocol.SemanticTokensParams{
+		TextDocument: protocol.TextDocumentIdentifier{
+			URI: protocol.DocumentURI(uri),
+		},
+	}
+
+	var result protocol.SemanticTokens
+	if err := c.Call(ctx, "textDocument/semanticTokens/full", params, &result); err != nil {
+		return nil, fmt.Errorf("semantic tokens failed: %w", err)
+	}
+
+	return &result, nil
+}
+
 // DetectLanguageID detects the language ID from a file URI
 func DetectLanguageID(uri string) string {
 	ext := strings.ToLower(filepath.Ext(uri))
