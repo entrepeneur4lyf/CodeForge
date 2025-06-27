@@ -1,6 +1,8 @@
 package layout
 
 import (
+	"fmt"
+
 	"github.com/charmbracelet/bubbles/key"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -30,7 +32,27 @@ type Layout struct {
 	bottomBar   string
 	sidebar     string
 	mainContent string
+
+	// Responsive configuration
+	minWidth     int
+	minHeight    int
+	compactWidth int // Below this width, use compact layout
+	mediumWidth  int // Below this width, use medium layout
+
+	// Layout state
+	layoutMode LayoutMode
+	tooSmall   bool
 }
+
+// LayoutMode defines different responsive layout modes
+type LayoutMode int
+
+const (
+	LayoutModeMinimal LayoutMode = iota // Terminal too small
+	LayoutModeCompact                   // Small terminal - minimal sidebar
+	LayoutModeMedium                    // Medium terminal - normal layout
+	LayoutModeFull                      // Large terminal - full features
+)
 
 // NewLayout creates a new layout with default dimensions
 func NewLayout() *Layout {
@@ -38,23 +60,46 @@ func NewLayout() *Layout {
 		topBarHeight:    1,
 		bottomBarHeight: 1,
 		sidebarWidth:    30,
+
+		// Responsive configuration
+		minWidth:     80,  // Minimum usable width
+		minHeight:    24,  // Minimum usable height
+		compactWidth: 100, // Below this, use compact layout
+		mediumWidth:  140, // Below this, use medium layout
+
+		// Default to medium layout
+		layoutMode: LayoutModeMedium,
 	}
 }
 
-// SetSize updates the layout dimensions and calculates responsive sidebar width
+// SetSize updates the layout dimensions and calculates responsive layout
 func (l *Layout) SetSize(width, height int) {
 	l.width = width
 	l.height = height
+	l.calculateResponsiveLayout()
+}
 
-	// Calculate responsive sidebar width
-	// Small terminals: 25% of width, min 20, max 35
-	// Large terminals: 20% of width, min 25, max 50
-	if width < 80 {
-		l.sidebarWidth = max(20, min(35, width/4))
-	} else if width < 120 {
-		l.sidebarWidth = max(25, min(40, width/4))
+// calculateResponsiveLayout determines layout mode and calculates responsive dimensions
+func (l *Layout) calculateResponsiveLayout() {
+	// Check if terminal is too small
+	l.tooSmall = l.width < l.minWidth || l.height < l.minHeight
+
+	if l.tooSmall {
+		l.layoutMode = LayoutModeMinimal
+		l.sidebarWidth = 0 // No sidebar in minimal mode
+		return
+	}
+
+	// Calculate responsive sidebar width and layout mode
+	if l.width < l.compactWidth {
+		l.layoutMode = LayoutModeCompact
+		l.sidebarWidth = max(15, min(25, l.width/5)) // Smaller sidebar for compact
+	} else if l.width < l.mediumWidth {
+		l.layoutMode = LayoutModeMedium
+		l.sidebarWidth = max(25, min(40, l.width/4)) // Standard sidebar
 	} else {
-		l.sidebarWidth = max(30, min(50, width/5))
+		l.layoutMode = LayoutModeFull
+		l.sidebarWidth = max(30, min(50, l.width/5)) // Larger sidebar for full mode
 	}
 }
 
@@ -64,6 +109,58 @@ func min(a, b int) int {
 		return a
 	}
 	return b
+}
+
+// max function is defined in container.go
+
+// GetLayoutMode returns the current layout mode
+func (l *Layout) GetLayoutMode() LayoutMode {
+	return l.layoutMode
+}
+
+// IsTooSmall returns whether the terminal is too small for the UI
+func (l *Layout) IsTooSmall() bool {
+	return l.tooSmall
+}
+
+// GetMinimumSize returns the minimum required terminal size
+func (l *Layout) GetMinimumSize() (width, height int) {
+	return l.minWidth, l.minHeight
+}
+
+// RenderTooSmallWarning renders a warning when terminal is too small
+func (l *Layout) RenderTooSmallWarning() string {
+	if !l.tooSmall {
+		return ""
+	}
+
+	warning := fmt.Sprintf("Terminal too small: %dx%d", l.width, l.height)
+	requirement := fmt.Sprintf("Minimum required: %dx%d", l.minWidth, l.minHeight)
+	instruction := "Please resize your terminal window"
+
+	// Center the content
+	content := lipgloss.JoinVertical(lipgloss.Center,
+		"",
+		"⚠️  CodeForge",
+		"",
+		warning,
+		requirement,
+		"",
+		instruction,
+		"",
+		"Press 'q' to quit",
+		"",
+	)
+
+	// Style and center in available space
+	style := lipgloss.NewStyle().
+		Foreground(lipgloss.Color("#FF6B6B")). // Red warning color
+		Bold(true).
+		Align(lipgloss.Center).
+		Width(l.width).
+		Height(l.height)
+
+	return style.Render(content)
 }
 
 // GetContentDimensions returns the dimensions for the main content area

@@ -9,6 +9,10 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/entrepeneur4lyf/codeforge/internal/analysis"
+	"github.com/entrepeneur4lyf/codeforge/internal/chunking"
+	"github.com/entrepeneur4lyf/codeforge/internal/git"
+	"github.com/entrepeneur4lyf/codeforge/internal/vectordb"
 	"github.com/mark3labs/mcp-go/mcp"
 )
 
@@ -146,20 +150,46 @@ func (cfs *CodeForgeServer) handleCodeAnalysis(ctx context.Context, request mcp.
 		return mcp.NewToolResultError(fmt.Sprintf("file not found: %s", path)), nil
 	}
 
-	// TODO: Implement actual code analysis using LSP or tree-sitter
-	// For now, return basic file information
+	// Read file content
+	content, err := os.ReadFile(fullPath)
+	if err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("failed to read file: %v", err)), nil
+	}
+
+	// Get file info
 	info, err := os.Stat(fullPath)
 	if err != nil {
 		return mcp.NewToolResultError(fmt.Sprintf("failed to get file info: %v", err)), nil
 	}
 
+	language := detectLanguage(path)
+
+	// Extract symbols using LSP-enhanced symbol extractor
+	symbolExtractor := analysis.NewSymbolExtractor()
+	symbols, err := symbolExtractor.ExtractSymbols(ctx, fullPath, string(content), language)
+	if err != nil {
+		// Fallback to basic analysis if symbol extraction fails
+		symbols = []vectordb.Symbol{}
+	}
+
+	// Use enhanced chunking to analyze code structure
+	chunker := chunking.NewCodeChunker(chunking.DefaultConfig())
+	chunks, err := chunker.ChunkFile(ctx, fullPath, string(content), language)
+	if err != nil {
+		chunks = []*vectordb.CodeChunk{}
+	}
+
+	// Prepare analysis result
 	analysis := map[string]interface{}{
-		"file_path": path,
-		"size":      info.Size(),
-		"modified":  info.ModTime(),
-		"language":  detectLanguage(path),
-		"symbols":   []string{}, // TODO: Extract actual symbols
-		"imports":   []string{}, // TODO: Extract actual imports
+		"file_path":    path,
+		"size":         info.Size(),
+		"modified":     info.ModTime(),
+		"language":     language,
+		"line_count":   strings.Count(string(content), "\n") + 1,
+		"symbols":      convertSymbolsToMap(symbols),
+		"chunks":       convertChunksToMap(chunks),
+		"chunk_count":  len(chunks),
+		"symbol_count": len(symbols),
 	}
 
 	analysisJSON, _ := json.MarshalIndent(analysis, "", "  ")
@@ -184,6 +214,186 @@ func (cfs *CodeForgeServer) handleProjectStructure(ctx context.Context, request 
 	}
 
 	return mcp.NewToolResultText(tree), nil
+}
+
+// handleSymbolSearch handles workspace symbol search requests
+func (cfs *CodeForgeServer) handleSymbolSearch(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	query, err := request.RequireString("query")
+	if err != nil {
+		return mcp.NewToolResultError("query parameter is required"), nil
+	}
+
+	kindFilter := request.GetString("kind", "")
+
+	// Use symbol extractor to search workspace symbols
+	symbolExtractor := analysis.NewSymbolExtractor()
+	symbols, err := symbolExtractor.ExtractWorkspaceSymbols(ctx, query)
+	if err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("symbol search failed: %v", err)), nil
+	}
+
+	// Filter by kind if specified
+	if kindFilter != "" {
+		filteredSymbols := []vectordb.Symbol{}
+		for _, symbol := range symbols {
+			if strings.EqualFold(symbol.Kind, kindFilter) {
+				filteredSymbols = append(filteredSymbols, symbol)
+			}
+		}
+		symbols = filteredSymbols
+	}
+
+	// Format results
+	result := map[string]interface{}{
+		"query":        query,
+		"kind_filter":  kindFilter,
+		"symbol_count": len(symbols),
+		"symbols":      convertSymbolsToMap(symbols),
+	}
+
+	resultJSON, _ := json.MarshalIndent(result, "", "  ")
+	return mcp.NewToolResultText(string(resultJSON)), nil
+}
+
+// handleGetDefinition handles get definition requests
+func (cfs *CodeForgeServer) handleGetDefinition(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	filePath, err := request.RequireString("file_path")
+	if err != nil {
+		return mcp.NewToolResultError("file_path parameter is required"), nil
+	}
+
+	line := int(request.GetFloat("line", 0))
+	character := int(request.GetFloat("character", 0))
+
+	if line <= 0 || character <= 0 {
+		return mcp.NewToolResultError("line and character must be positive integers"), nil
+	}
+
+	// Validate and resolve path
+	fullPath, err := cfs.validatePath(filePath)
+	if err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("invalid path: %v", err)), nil
+	}
+
+	// Check if file exists
+	if !cfs.fileExists(fullPath) {
+		return mcp.NewToolResultError(fmt.Sprintf("file not found: %s", filePath)), nil
+	}
+
+	// Detect language
+	language := detectLanguage(filePath)
+
+	// Use symbol extractor to get definition
+	symbolExtractor := analysis.NewSymbolExtractor()
+	locations, err := symbolExtractor.GetDefinition(ctx, fullPath, line-1, character-1, language) // Convert to 0-based
+	if err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("failed to get definition: %v", err)), nil
+	}
+
+	// Format results
+	result := map[string]interface{}{
+		"file_path":        filePath,
+		"line":             line,
+		"character":        character,
+		"definition_count": len(locations),
+		"definitions":      convertLocationsToMap(locations),
+	}
+
+	resultJSON, _ := json.MarshalIndent(result, "", "  ")
+	return mcp.NewToolResultText(string(resultJSON)), nil
+}
+
+// handleGetReferences handles get references requests
+func (cfs *CodeForgeServer) handleGetReferences(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	filePath, err := request.RequireString("file_path")
+	if err != nil {
+		return mcp.NewToolResultError("file_path parameter is required"), nil
+	}
+
+	line := int(request.GetFloat("line", 0))
+	character := int(request.GetFloat("character", 0))
+	includeDeclaration := true
+	if args, ok := request.Params.Arguments.(map[string]interface{}); ok {
+		if val, ok := args["include_declaration"].(bool); ok {
+			includeDeclaration = val
+		}
+	}
+
+	if line <= 0 || character <= 0 {
+		return mcp.NewToolResultError("line and character must be positive integers"), nil
+	}
+
+	// Validate and resolve path
+	fullPath, err := cfs.validatePath(filePath)
+	if err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("invalid path: %v", err)), nil
+	}
+
+	// Check if file exists
+	if !cfs.fileExists(fullPath) {
+		return mcp.NewToolResultError(fmt.Sprintf("file not found: %s", filePath)), nil
+	}
+
+	// Detect language
+	language := detectLanguage(filePath)
+
+	// Use symbol extractor to get references
+	symbolExtractor := analysis.NewSymbolExtractor()
+	locations, err := symbolExtractor.GetReferences(ctx, fullPath, line-1, character-1, language, includeDeclaration) // Convert to 0-based
+	if err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("failed to get references: %v", err)), nil
+	}
+
+	// Format results
+	result := map[string]interface{}{
+		"file_path":           filePath,
+		"line":                line,
+		"character":           character,
+		"include_declaration": includeDeclaration,
+		"reference_count":     len(locations),
+		"references":          convertLocationsToMap(locations),
+	}
+
+	resultJSON, _ := json.MarshalIndent(result, "", "  ")
+	return mcp.NewToolResultText(string(resultJSON)), nil
+}
+
+// handleGitDiff handles git diff requests
+func (cfs *CodeForgeServer) handleGitDiff(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	staged := false
+	if args, ok := request.Params.Arguments.(map[string]interface{}); ok {
+		if val, ok := args["staged"].(bool); ok {
+			staged = val
+		}
+	}
+
+	// Create git repository instance
+	repo := git.NewRepository(cfs.workspaceRoot)
+
+	// Check if git is available and this is a git repository
+	if !git.IsGitInstalled() {
+		return mcp.NewToolResultError("Git is not installed"), nil
+	}
+
+	if !repo.IsGitRepository() {
+		return mcp.NewToolResultError("Not a git repository"), nil
+	}
+
+	// Get git diff
+	diffs, err := repo.GetDiff(ctx, staged)
+	if err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("failed to get git diff: %v", err)), nil
+	}
+
+	// Format results
+	result := map[string]interface{}{
+		"staged":     staged,
+		"diff_count": len(diffs),
+		"diffs":      convertDiffsToMap(diffs),
+	}
+
+	resultJSON, _ := json.MarshalIndent(result, "", "  ")
+	return mcp.NewToolResultText(string(resultJSON)), nil
 }
 
 // Resource Handlers
@@ -249,14 +459,36 @@ func (cfs *CodeForgeServer) handleFileResource(ctx context.Context, request mcp.
 
 // handleGitStatus handles git status resource requests
 func (cfs *CodeForgeServer) handleGitStatus(ctx context.Context, request mcp.ReadResourceRequest) ([]mcp.ResourceContents, error) {
-	// TODO: Implement actual git status checking
-	// For now, return placeholder data
-	gitStatus := map[string]interface{}{
-		"branch":    "main",
-		"status":    "clean",
-		"modified":  []string{},
-		"untracked": []string{},
-		"staged":    []string{},
+	// Create git repository instance
+	repo := git.NewRepository(cfs.workspaceRoot)
+
+	var gitStatus interface{}
+
+	// Check if git is available and this is a git repository
+	if !git.IsGitInstalled() {
+		gitStatus = map[string]interface{}{
+			"error":   "Git is not installed",
+			"status":  "unavailable",
+			"message": "Git command not found in PATH",
+		}
+	} else if !repo.IsGitRepository() {
+		gitStatus = map[string]interface{}{
+			"error":   "Not a git repository",
+			"status":  "not_git",
+			"message": "The workspace is not a git repository",
+		}
+	} else {
+		// Get actual git status
+		status, err := repo.GetStatus(ctx)
+		if err != nil {
+			gitStatus = map[string]interface{}{
+				"error":   fmt.Sprintf("Failed to get git status: %v", err),
+				"status":  "error",
+				"message": "Could not retrieve git status",
+			}
+		} else {
+			gitStatus = status
+		}
 	}
 
 	statusJSON, _ := json.MarshalIndent(gitStatus, "", "  ")
@@ -361,4 +593,82 @@ func (cfs *CodeForgeServer) buildDirectoryTree(rootPath string, maxDepth int) (s
 	})
 
 	return result.String(), err
+}
+
+// convertSymbolsToMap converts symbols to a map format for JSON serialization
+func convertSymbolsToMap(symbols []vectordb.Symbol) []map[string]interface{} {
+	result := make([]map[string]interface{}, len(symbols))
+	for i, symbol := range symbols {
+		result[i] = map[string]interface{}{
+			"name":          symbol.Name,
+			"kind":          symbol.Kind,
+			"signature":     symbol.Signature,
+			"documentation": symbol.Documentation,
+			"location": map[string]interface{}{
+				"start_line":   symbol.Location.StartLine,
+				"end_line":     symbol.Location.EndLine,
+				"start_column": symbol.Location.StartColumn,
+				"end_column":   symbol.Location.EndColumn,
+			},
+		}
+	}
+	return result
+}
+
+// convertChunksToMap converts chunks to a map format for JSON serialization
+func convertChunksToMap(chunks []*vectordb.CodeChunk) []map[string]interface{} {
+	result := make([]map[string]interface{}, len(chunks))
+	for i, chunk := range chunks {
+		result[i] = map[string]interface{}{
+			"id":         chunk.ID,
+			"chunk_type": chunk.ChunkType.Type,
+			"language":   chunk.Language,
+			"location": map[string]interface{}{
+				"start_line":   chunk.Location.StartLine,
+				"end_line":     chunk.Location.EndLine,
+				"start_column": chunk.Location.StartColumn,
+				"end_column":   chunk.Location.EndColumn,
+			},
+			"content_length": len(chunk.Content),
+			"symbol_count":   len(chunk.Symbols),
+			"import_count":   len(chunk.Imports),
+			"metadata":       chunk.Metadata,
+		}
+	}
+	return result
+}
+
+// convertLocationsToMap converts source locations to a map format for JSON serialization
+func convertLocationsToMap(locations []vectordb.SourceLocation) []map[string]interface{} {
+	result := make([]map[string]interface{}, len(locations))
+	for i, location := range locations {
+		result[i] = map[string]interface{}{
+			"start_line":   location.StartLine,
+			"end_line":     location.EndLine,
+			"start_column": location.StartColumn,
+			"end_column":   location.EndColumn,
+		}
+	}
+	return result
+}
+
+// convertDiffsToMap converts git diffs to a map format for JSON serialization
+func convertDiffsToMap(diffs []git.GitDiff) []map[string]interface{} {
+	result := make([]map[string]interface{}, len(diffs))
+	for i, diff := range diffs {
+		result[i] = map[string]interface{}{
+			"file_path":   diff.FilePath,
+			"old_path":    diff.OldPath,
+			"status":      diff.Status,
+			"additions":   diff.Additions,
+			"deletions":   diff.Deletions,
+			"is_binary":   diff.IsBinary,
+			"is_renamed":  diff.IsRenamed,
+			"is_new_file": diff.IsNewFile,
+			"is_deleted":  diff.IsDeleted,
+			"similarity":  diff.Similarity,
+			"content":     diff.Content,
+		}
+	}
+	return result
 }

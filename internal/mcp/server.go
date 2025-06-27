@@ -119,6 +119,71 @@ func (cfs *CodeForgeServer) registerTools() {
 	)
 
 	cfs.server.AddTool(projectStructureTool, cfs.handleProjectStructure)
+
+	// Symbol search tool
+	symbolSearchTool := mcp.NewTool("symbol_search",
+		mcp.WithDescription("Search for symbols across the workspace"),
+		mcp.WithString("query",
+			mcp.Required(),
+			mcp.Description("Symbol name or pattern to search for"),
+		),
+		mcp.WithString("kind",
+			mcp.Description("Symbol kind filter (function, class, variable, etc.)"),
+		),
+	)
+
+	cfs.server.AddTool(symbolSearchTool, cfs.handleSymbolSearch)
+
+	// Get definition tool
+	getDefinitionTool := mcp.NewTool("get_definition",
+		mcp.WithDescription("Get the definition of a symbol at a specific location"),
+		mcp.WithString("file_path",
+			mcp.Required(),
+			mcp.Description("Path to the file"),
+		),
+		mcp.WithNumber("line",
+			mcp.Required(),
+			mcp.Description("Line number (1-based)"),
+		),
+		mcp.WithNumber("character",
+			mcp.Required(),
+			mcp.Description("Character position (1-based)"),
+		),
+	)
+
+	cfs.server.AddTool(getDefinitionTool, cfs.handleGetDefinition)
+
+	// Get references tool
+	getReferencesTool := mcp.NewTool("get_references",
+		mcp.WithDescription("Get all references to a symbol at a specific location"),
+		mcp.WithString("file_path",
+			mcp.Required(),
+			mcp.Description("Path to the file"),
+		),
+		mcp.WithNumber("line",
+			mcp.Required(),
+			mcp.Description("Line number (1-based)"),
+		),
+		mcp.WithNumber("character",
+			mcp.Required(),
+			mcp.Description("Character position (1-based)"),
+		),
+		mcp.WithBoolean("include_declaration",
+			mcp.Description("Include the declaration in results (default: true)"),
+		),
+	)
+
+	cfs.server.AddTool(getReferencesTool, cfs.handleGetReferences)
+
+	// Git diff tool
+	gitDiffTool := mcp.NewTool("git_diff",
+		mcp.WithDescription("Get git diff for the repository"),
+		mcp.WithBoolean("staged",
+			mcp.Description("Get staged changes instead of working directory changes"),
+		),
+	)
+
+	cfs.server.AddTool(gitDiffTool, cfs.handleGitDiff)
 }
 
 // registerResources registers all CodeForge resources
