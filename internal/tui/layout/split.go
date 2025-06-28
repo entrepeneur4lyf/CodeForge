@@ -1,6 +1,8 @@
 package layout
 
 import (
+	"fmt"
+
 	"github.com/charmbracelet/bubbles/key"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -17,6 +19,11 @@ type SplitPaneLayout interface {
 	ClearLeftPanel() tea.Cmd
 	ClearRightPanel() tea.Cmd
 	ClearBottomPanel() tea.Cmd
+
+	// Responsive layout methods
+	IsTooSmall() bool
+	GetLayoutMode() LayoutMode
+	RenderTooSmallWarning() string
 }
 
 type splitPaneLayout struct {
@@ -28,6 +35,13 @@ type splitPaneLayout struct {
 	rightPanel  Container
 	leftPanel   Container
 	bottomPanel Container
+
+	// Responsive layout
+	minWidth     int
+	minHeight    int
+	compactWidth int
+	layoutMode   LayoutMode
+	tooSmall     bool
 }
 
 type SplitPaneOption func(*splitPaneLayout)
@@ -114,6 +128,9 @@ func (s *splitPaneLayout) SetSize(width, height int) tea.Cmd {
 	s.width = width
 	s.height = height
 
+	// Calculate responsive layout
+	s.calculateResponsiveLayout()
+
 	var cmds []tea.Cmd
 
 	// Calculate dimensions for panels
@@ -156,6 +173,73 @@ func (s *splitPaneLayout) SetSize(width, height int) tea.Cmd {
 	}
 
 	return tea.Batch(cmds...)
+}
+
+// calculateResponsiveLayout determines layout mode and adjusts ratios for small screens
+func (s *splitPaneLayout) calculateResponsiveLayout() {
+	// Check if terminal is too small
+	s.tooSmall = s.width < s.minWidth || s.height < s.minHeight
+
+	if s.tooSmall {
+		s.layoutMode = LayoutModeMinimal
+		return
+	}
+
+	// Determine layout mode and adjust ratios
+	if s.width < s.compactWidth {
+		s.layoutMode = LayoutModeCompact
+		// In compact mode, give more space to the main content
+		s.ratio = 0.2 // Smaller left panel (20%)
+	} else {
+		s.layoutMode = LayoutModeMedium
+		// Standard layout
+		s.ratio = 0.3 // Standard left panel (30%)
+	}
+}
+
+// IsTooSmall returns whether the terminal is too small for the UI
+func (s *splitPaneLayout) IsTooSmall() bool {
+	return s.tooSmall
+}
+
+// GetLayoutMode returns the current layout mode
+func (s *splitPaneLayout) GetLayoutMode() LayoutMode {
+	return s.layoutMode
+}
+
+// RenderTooSmallWarning renders a warning when terminal is too small
+func (s *splitPaneLayout) RenderTooSmallWarning() string {
+	if !s.tooSmall {
+		return ""
+	}
+
+	warning := fmt.Sprintf("Terminal too small: %dx%d", s.width, s.height)
+	requirement := fmt.Sprintf("Minimum required: %dx%d", s.minWidth, s.minHeight)
+	instruction := "Please resize your terminal window"
+
+	// Center the content
+	content := lipgloss.JoinVertical(lipgloss.Center,
+		"",
+		"⚠️  CodeForge",
+		"",
+		warning,
+		requirement,
+		"",
+		instruction,
+		"",
+		"Press 'q' to quit",
+		"",
+	)
+
+	// Style and center in available space
+	style := lipgloss.NewStyle().
+		Foreground(lipgloss.Color("#FF6B6B")). // Red warning color
+		Bold(true).
+		Align(lipgloss.Center).
+		Width(s.width).
+		Height(s.height)
+
+	return style.Render(content)
 }
 
 func (s *splitPaneLayout) GetSize() (int, int) {
@@ -223,6 +307,12 @@ func NewSplitPaneLayout(options ...SplitPaneOption) SplitPaneLayout {
 	s := &splitPaneLayout{
 		ratio:         0.3, // Default 30% left, 70% right
 		verticalRatio: 0.8, // Default 80% top, 20% bottom
+
+		// Responsive defaults
+		minWidth:     80,  // Minimum usable width
+		minHeight:    24,  // Minimum usable height
+		compactWidth: 100, // Below this, use compact layout
+		layoutMode:   LayoutModeMedium,
 	}
 
 	for _, option := range options {

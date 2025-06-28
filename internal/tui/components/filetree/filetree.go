@@ -456,32 +456,6 @@ func (m *FileTreeModel) renderNode(node *TreeNode, selected bool) string {
 	return style.Render(line)
 }
 
-// getFileIcon returns an appropriate icon for the file type
-func (m *FileTreeModel) getFileIcon(filename string) string {
-	ext := strings.ToLower(filepath.Ext(filename))
-
-	switch ext {
-	case ".go":
-		return "🐹"
-	case ".rs":
-		return "🦀"
-	case ".js", ".ts":
-		return "📜"
-	case ".py":
-		return "🐍"
-	case ".md":
-		return "📝"
-	case ".json":
-		return "📋"
-	case ".yaml", ".yml":
-		return "⚙️"
-	case ".toml":
-		return "🔧"
-	default:
-		return "📄"
-	}
-}
-
 // getGitStatusColor returns the color for a git status
 func (m *FileTreeModel) getGitStatusColor(status string) lipgloss.Color {
 	t := theme.CurrentTheme()

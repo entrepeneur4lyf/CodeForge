@@ -13,6 +13,7 @@ import (
 	"github.com/charmbracelet/harmonica"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/log"
+	"github.com/entrepeneur4lyf/codeforge/internal/llm/models"
 	"github.com/entrepeneur4lyf/codeforge/internal/tui/theme"
 )
 
@@ -37,6 +38,11 @@ type ChatModel struct {
 	inputHeight int
 	animation   harmonica.Spring
 	scrollPos   float64
+
+	// Model configuration
+	currentModel *models.ModelSummary
+	modelAPI     *models.ModelAPI
+	modelChanged bool
 }
 
 // MessageSentMsg is sent when a message is submitted
@@ -50,8 +56,13 @@ type MessageReceivedMsg struct {
 	ID      string
 }
 
+// ModelChangedMsg is sent when the chat model is changed
+type ModelChangedMsg struct {
+	Model models.ModelSummary
+}
+
 // NewChatModel creates a new chat model
-func NewChatModel() *ChatModel {
+func NewChatModel(modelAPI *models.ModelAPI) *ChatModel {
 	// Create input textarea
 	input := textarea.New()
 	input.Placeholder = "Ask me anything about your code..."
@@ -78,11 +89,14 @@ func NewChatModel() *ChatModel {
 	log.Info("Created chat model")
 
 	return &ChatModel{
-		messages:    make([]Message, 0),
-		input:       input,
-		viewport:    vp,
-		renderer:    renderer,
-		inputHeight: 3,
+		messages:     make([]Message, 0),
+		input:        input,
+		viewport:     vp,
+		renderer:     renderer,
+		inputHeight:  3,
+		modelAPI:     modelAPI,
+		currentModel: nil, // Will be set when a model is selected
+		modelChanged: false,
 	}
 }
 
@@ -173,6 +187,10 @@ func (cm *ChatModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		cm.addAssistantMessage(msg.Content, msg.ID)
 		log.Debug("Message received", "id", msg.ID)
 
+	case ModelChangedMsg:
+		cm.setCurrentModel(&msg.Model)
+		log.Info("Chat model changed", "model", msg.Model.Name, "provider", msg.Model.Provider)
+
 	case tea.WindowSizeMsg:
 		cm.width = msg.Width
 		cm.height = msg.Height
@@ -256,12 +274,18 @@ func (cm *ChatModel) renderMessage(msg Message) string {
 	var headerStyle lipgloss.Style
 	var roleIcon string
 
-	if msg.Role == "user" {
+	switch msg.Role {
+	case "user":
 		headerStyle = lipgloss.NewStyle().
 			Foreground(t.Info()).
 			Bold(true)
 		roleIcon = "👤"
-	} else {
+	case "system":
+		headerStyle = lipgloss.NewStyle().
+			Foreground(t.Warning()).
+			Bold(true)
+		roleIcon = "⚙️"
+	default: // assistant
 		headerStyle = lipgloss.NewStyle().
 			Foreground(t.Primary()).
 			Bold(true)
@@ -410,6 +434,40 @@ func (cm *ChatModel) SetSize(width, height int) {
 // GetMessages returns all messages
 func (cm *ChatModel) GetMessages() []Message {
 	return cm.messages
+}
+
+// setCurrentModel sets the current model for the chat
+func (cm *ChatModel) setCurrentModel(model *models.ModelSummary) {
+	cm.currentModel = model
+	cm.modelChanged = true
+
+	// Add a system message to indicate model change
+	if model != nil {
+		systemMessage := Message{
+			ID:        fmt.Sprintf("system-%d", time.Now().UnixNano()),
+			Content:   fmt.Sprintf("🤖 Switched to %s (%s)", model.Name, model.Provider),
+			Role:      "system",
+			Timestamp: time.Now(),
+		}
+		systemMessage.Rendered = cm.renderMessage(systemMessage)
+		cm.messages = append(cm.messages, systemMessage)
+		cm.updateViewport()
+	}
+}
+
+// GetCurrentModel returns the currently selected model
+func (cm *ChatModel) GetCurrentModel() *models.ModelSummary {
+	return cm.currentModel
+}
+
+// HasModelChanged returns whether the model has been changed
+func (cm *ChatModel) HasModelChanged() bool {
+	return cm.modelChanged
+}
+
+// ClearModelChanged clears the model changed flag
+func (cm *ChatModel) ClearModelChanged() {
+	cm.modelChanged = false
 }
 
 // min returns the minimum of two integers

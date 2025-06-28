@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"strings"
 	"time"
 
 	"github.com/charmbracelet/bubbles/filepicker"
@@ -13,17 +12,23 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/log"
 	"github.com/entrepeneur4lyf/codeforge/internal/config"
+	"github.com/entrepeneur4lyf/codeforge/internal/git"
 	"github.com/entrepeneur4lyf/codeforge/internal/llm"
+	"github.com/entrepeneur4lyf/codeforge/internal/llm/models"
+	"github.com/entrepeneur4lyf/codeforge/internal/lsp"
 	"github.com/entrepeneur4lyf/codeforge/internal/tui/animation"
 	"github.com/entrepeneur4lyf/codeforge/internal/tui/components/chat"
 	"github.com/entrepeneur4lyf/codeforge/internal/tui/components/dialog"
 	"github.com/entrepeneur4lyf/codeforge/internal/tui/components/filetree"
 	"github.com/entrepeneur4lyf/codeforge/internal/tui/components/fileviewer"
+	"github.com/entrepeneur4lyf/codeforge/internal/tui/components/help"
+	"github.com/entrepeneur4lyf/codeforge/internal/tui/components/mcp"
+	modelscomponents "github.com/entrepeneur4lyf/codeforge/internal/tui/components/models"
 	"github.com/entrepeneur4lyf/codeforge/internal/tui/components/splash"
+	"github.com/entrepeneur4lyf/codeforge/internal/tui/components/status"
 	"github.com/entrepeneur4lyf/codeforge/internal/tui/components/tabs"
 	"github.com/entrepeneur4lyf/codeforge/internal/tui/components/toast"
 	"github.com/entrepeneur4lyf/codeforge/internal/tui/layout"
-	"github.com/entrepeneur4lyf/codeforge/internal/tui/styles"
 	"github.com/entrepeneur4lyf/codeforge/internal/tui/theme"
 )
 
@@ -63,6 +68,18 @@ func (w *TabManagerWrapper) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return w, cmd
 }
 
+type FileTreeWrapper struct {
+	*filetree.TreeModel
+}
+
+func (w *FileTreeWrapper) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	model, cmd := w.TreeModel.Update(msg)
+	if treeModel, ok := model.(*filetree.TreeModel); ok {
+		w.TreeModel = treeModel
+	}
+	return w, cmd
+}
+
 // AppModel represents the main application model
 type AppModel struct {
 	// Application state
@@ -73,11 +90,32 @@ type AppModel struct {
 
 	// Core components
 	filePicker   filepicker.Model
+	fileTree     *filetree.TreeModel
 	fileViewer   *fileviewer.FileViewer
 	tabManager   *tabs.TabManager
 	chatModel    *chat.ChatModel
 	animManager  *animation.Manager
 	toastManager *toast.ToastManager
+
+	// Model Management
+	modelAPI          *models.ModelAPI
+	modelSelector     *modelscomponents.ModelSelectorComponent
+	modelSettings     *modelscomponents.ModelSettingsDialog
+	showModelSelector bool
+	showModelSettings bool
+
+	// Enhanced Status Bar
+	enhancedStatusBar *status.EnhancedStatusBar
+	lspManager        *lsp.Manager
+	gitRepo           *git.Repository
+
+	// Help Screen
+	helpScreen *help.HelpScreen
+	showHelp   bool
+
+	// MCP Marketplace
+	mcpMarketplace     *mcp.MarketplaceModel
+	showMCPMarketplace bool
 
 	// Dialogs (OpenCode pattern)
 	showInitDialog         bool
@@ -94,12 +132,6 @@ type AppModel struct {
 	focused     string // "filetree", "tabs", "dialog"
 	projectPath string
 	initialized bool
-
-	// Status
-	lspStatus      map[string]string
-	gitStatus      map[string]string
-	vectorDBStatus string
-	currentBranch  string
 }
 
 // NewApp creates a new application
@@ -117,16 +149,35 @@ func NewApp(projectPath string) *AppModel {
 	// Create splash screen
 	splashModel := splash.New()
 
+	// Initialize model management first (needed by chat)
+	modelAPI := models.NewModelAPI()
+
 	// Create components (but don't initialize them yet)
 	filePicker := filepicker.New()
 	// Don't set CurrentDirectory yet - will be set after splash completes to avoid blocking UI
-	chatModel := chat.NewChatModel()
+	fileTree := filetree.NewTreeModel(absPath)
+	chatModel := chat.NewChatModel(modelAPI)
 	fileViewer := fileviewer.New()
 	initDialog := dialog.NewInitDialogCmp()
 	providerSettingsDialog := dialog.NewProviderSettingsDialog()
 	tabManager := tabs.NewTabManager()
 	animManager := animation.NewManager()
 	toastManager := toast.NewToastManager()
+
+	// Initialize model management components
+	modelSelector := modelscomponents.NewModelSelectorComponent(modelAPI)
+	modelSettings := modelscomponents.NewModelSettingsDialog(modelAPI)
+
+	// Initialize enhanced status bar dependencies
+	lspManager := lsp.GetManager()
+	gitRepo := git.NewRepository(absPath)
+	enhancedStatusBar := status.NewEnhancedStatusBar(lspManager, gitRepo, modelAPI)
+
+	// Initialize help screen
+	helpScreen := help.NewHelpScreen()
+
+	// Initialize MCP marketplace
+	mcpMarketplace := mcp.NewMarketplaceModel()
 
 	// Add tabs
 	tabManager.AddTab("chat", "💬 Chat", chatModel)
@@ -140,7 +191,7 @@ func NewApp(projectPath string) *AppModel {
 	)
 
 	// Create wrapper models to make them compatible with tea.Model
-	sidebarModel := &FilePickerWrapper{filePicker}
+	sidebarModel := &FileTreeWrapper{fileTree}
 	mainModel := &TabManagerWrapper{tabManager}
 
 	// Create containers for each panel
@@ -165,11 +216,24 @@ func NewApp(projectPath string) *AppModel {
 		state:                  StateSplash, // Start with splash screen
 		splashModel:            splashModel,
 		filePicker:             filePicker,
+		fileTree:               fileTree,
 		fileViewer:             fileViewer,
 		tabManager:             tabManager,
 		chatModel:              chatModel,
 		animManager:            animManager,
 		toastManager:           toastManager,
+		modelAPI:               modelAPI,
+		modelSelector:          modelSelector,
+		modelSettings:          modelSettings,
+		showModelSelector:      false,
+		showModelSettings:      false,
+		enhancedStatusBar:      enhancedStatusBar,
+		lspManager:             lspManager,
+		gitRepo:                gitRepo,
+		helpScreen:             helpScreen,
+		showHelp:               false,
+		mcpMarketplace:         mcpMarketplace,
+		showMCPMarketplace:     false,
 		initDialog:             initDialog,
 		providerSettingsDialog: providerSettingsDialog,
 		showInitDialog:         false, // Will be set after splash completes
@@ -177,10 +241,6 @@ func NewApp(projectPath string) *AppModel {
 		splitLayout:            splitLayout,
 		projectPath:            absPath,
 		focused:                "tabs",
-		lspStatus:              make(map[string]string),
-		gitStatus:              make(map[string]string),
-		vectorDBStatus:         "Ready",
-		currentBranch:          "main",
 	}
 
 	// Set dialog visibility based on initialization status
@@ -201,6 +261,24 @@ func (app *AppModel) Init() tea.Cmd {
 	// Initialize components
 	cmds = append(cmds, app.tabManager.Init())
 	cmds = append(cmds, app.chatModel.Init())
+
+	// Initialize model management
+	cmds = append(cmds, app.modelSelector.Init())
+	cmds = append(cmds, func() tea.Msg {
+		// Initialize ModelAPI in background
+		go func() {
+			if err := app.modelAPI.Initialize(context.Background()); err != nil {
+				log.Error("Failed to initialize ModelAPI", "error", err)
+			}
+		}()
+		return nil
+	})
+
+	// Initialize enhanced status bar
+	cmds = append(cmds, app.enhancedStatusBar.Init())
+
+	// Initialize help screen
+	cmds = append(cmds, app.helpScreen.Init())
 
 	// Don't load files immediately - wait until dialog is closed to avoid blocking UI
 
@@ -302,9 +380,9 @@ func (app *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "ctrl+p":
 			// Show command palette via toast
 			cmds = append(cmds, toast.NewInfoToast(
-				"Available commands:\n• Ctrl+Shift+P - Provider Settings\n• Ctrl+, - Settings\n• Ctrl+E - File Explorer\n• Tab - Switch Tabs\n• Ctrl+C/Q - Quit",
+				"Available commands:\n• F1 - Help Screen\n• Ctrl+M - Model Selector\n• Ctrl+Shift+M - Model Settings\n• Ctrl+Alt+M - MCP Marketplace\n• Ctrl+Shift+P - Provider Settings\n• Ctrl+, - Settings\n• Ctrl+E - File Explorer\n• Tab - Switch Tabs\n• Ctrl+C/Q - Quit",
 				toast.WithTitle("Command Palette"),
-				toast.WithDuration(5*time.Second),
+				toast.WithDuration(6*time.Second),
 			))
 		case "ctrl+comma":
 			// Show settings info via toast
@@ -326,11 +404,49 @@ func (app *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if !app.showInitDialog {
 				app.focused = "filetree"
 				app.tabManager.SetFocused(false)
+				app.fileTree.Focus()
 			}
 		case "ctrl+t":
 			if !app.showInitDialog {
 				app.focused = "tabs"
 				app.tabManager.SetFocused(true)
+				app.fileTree.Blur()
+			}
+		case "ctrl+m":
+			// Show model selector
+			if !app.showInitDialog {
+				app.showModelSelector = true
+				app.focused = "model_selector"
+				app.modelSelector.SetFocus(true)
+				cmds = append(cmds, toast.NewInfoToast(
+					"Model selector opened - Press 'f' for favorites, 'q' for quick select, 'esc' to close",
+					toast.WithTitle("Model Selector"),
+					toast.WithDuration(3*time.Second),
+				))
+			}
+		case "ctrl+shift+m":
+			// Show model settings
+			if !app.showInitDialog {
+				app.showModelSettings = true
+				app.focused = "model_settings"
+				cmds = append(cmds, app.modelSettings.Show())
+				cmds = append(cmds, toast.NewInfoToast(
+					"Model settings opened - Configure your preferences",
+					toast.WithTitle("Model Settings"),
+					toast.WithDuration(2*time.Second),
+				))
+			}
+		case "ctrl+alt+m":
+			// Show MCP marketplace
+			if !app.showInitDialog {
+				app.showMCPMarketplace = true
+				app.focused = "mcp_marketplace"
+				app.mcpMarketplace.Focus()
+				cmds = append(cmds, toast.NewInfoToast(
+					"MCP Marketplace opened - Browse and manage MCP servers",
+					toast.WithTitle("MCP Marketplace"),
+					toast.WithDuration(3*time.Second),
+				))
 			}
 		// Global tab switching shortcuts
 		case "ctrl+1":
@@ -351,14 +467,18 @@ func (app *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				nextTab := (app.tabManager.GetActiveTabIndex() + 1) % app.tabManager.GetTabCount()
 				cmds = append(cmds, app.tabManager.SwitchToIndex(nextTab))
 			}
-		case "f1":
+		case "f1", "?":
 			if !app.showInitDialog {
-				// Show help information via toast
-				cmds = append(cmds, toast.NewInfoToast(
-					"CodeForge Help:\n• F1 - Help\n• Ctrl+P - Command Palette\n• Ctrl+Shift+P - Provider Settings\n• Ctrl+, - Settings\n• Ctrl+E - File Explorer\n• Ctrl+T - Focus Tabs\n• Tab - Switch Focus\n• Ctrl+1/2/3 - Switch Tabs\n• Ctrl+C/Q - Quit",
-					toast.WithTitle("Help"),
-					toast.WithDuration(6*time.Second),
-				))
+				// Toggle help screen
+				if app.showHelp {
+					app.helpScreen.Hide()
+					app.showHelp = false
+					app.focused = "tabs" // Return focus to tabs
+				} else {
+					app.helpScreen.Show()
+					app.showHelp = true
+					app.focused = "help"
+				}
 			}
 		}
 
@@ -443,13 +563,26 @@ func (app *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		app.fileViewer.LoadFile(msg.Path)
 		app.tabManager.SwitchToTab("viewer")
 		app.focused = "tabs"
-		// Show info toast
-		fileName := filepath.Base(msg.Path)
-		cmds = append(cmds, toast.NewInfoToast(
-			fmt.Sprintf("Opened %s", fileName),
-			toast.WithTitle("File Opened"),
-			toast.WithDuration(2*time.Second),
+
+	case modelscomponents.ModelSelectedMsg:
+		// Handle model selection
+		app.showModelSelector = false
+		app.focused = "tabs"
+		app.modelSelector.SetFocus(false)
+
+		// Show success toast with model info
+		cmds = append(cmds, toast.NewSuccessToast(
+			fmt.Sprintf("Selected model: %s (%s)", msg.Model.Name, msg.Model.Provider),
+			toast.WithTitle("Model Changed"),
+			toast.WithDuration(3*time.Second),
 		))
+
+		// Send model change to chat component
+		cmds = append(cmds, func() tea.Msg {
+			return chat.ModelChangedMsg{Model: msg.Model}
+		})
+
+		log.Info("Model selected", "model", msg.Model.Name, "provider", msg.Model.Provider)
 
 	case chat.MessageSentMsg:
 		// Send to AI service and get response (silent operation)
@@ -525,20 +658,97 @@ func (app *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			cmds = append(cmds, cmd)
 		}
 
+		// Always update enhanced status bar for real-time status updates
+		statusModel, statusCmd := app.enhancedStatusBar.Update(msg)
+		if statusBar, ok := statusModel.(*status.EnhancedStatusBar); ok {
+			app.enhancedStatusBar = statusBar
+		}
+		if statusCmd != nil {
+			cmds = append(cmds, statusCmd)
+		}
+
 		// Forward messages to appropriate components based on focus
 		if !app.showInitDialog {
 			switch app.focused {
 			case "filetree":
-				var cmd tea.Cmd
-				app.filePicker, cmd = app.filePicker.Update(msg)
-				if cmd != nil {
-					cmds = append(cmds, cmd)
+				model, updateCmd := app.fileTree.Update(msg)
+				if treeModel, ok := model.(*filetree.TreeModel); ok {
+					app.fileTree = treeModel
+				}
+				if updateCmd != nil {
+					cmds = append(cmds, updateCmd)
 				}
 			case "tabs":
 				var cmd tea.Cmd
 				app.tabManager, cmd = app.tabManager.Update(msg)
 				if cmd != nil {
 					cmds = append(cmds, cmd)
+				}
+			case "model_selector":
+				if app.showModelSelector {
+					model, updateCmd := app.modelSelector.Update(msg)
+					if selector, ok := model.(*modelscomponents.ModelSelectorComponent); ok {
+						app.modelSelector = selector
+					}
+					if updateCmd != nil {
+						cmds = append(cmds, updateCmd)
+					}
+
+					// Handle escape to close model selector
+					if keyMsg, ok := msg.(tea.KeyMsg); ok && keyMsg.String() == "esc" {
+						app.showModelSelector = false
+						app.focused = "tabs"
+						app.modelSelector.SetFocus(false)
+					}
+				}
+			case "model_settings":
+				if app.showModelSettings {
+					model, updateCmd := app.modelSettings.Update(msg)
+					if settings, ok := model.(*modelscomponents.ModelSettingsDialog); ok {
+						app.modelSettings = settings
+					}
+					if updateCmd != nil {
+						cmds = append(cmds, updateCmd)
+					}
+
+					// Check if settings dialog was closed
+					if !app.modelSettings.IsVisible() {
+						app.showModelSettings = false
+						app.focused = "tabs"
+					}
+				}
+			case "help":
+				if app.showHelp {
+					model, updateCmd := app.helpScreen.Update(msg)
+					if helpScreen, ok := model.(*help.HelpScreen); ok {
+						app.helpScreen = helpScreen
+					}
+					if updateCmd != nil {
+						cmds = append(cmds, updateCmd)
+					}
+
+					// Check if help screen was closed
+					if !app.helpScreen.IsVisible() {
+						app.showHelp = false
+						app.focused = "tabs"
+					}
+				}
+			case "mcp_marketplace":
+				if app.showMCPMarketplace {
+					model, updateCmd := app.mcpMarketplace.Update(msg)
+					if marketplace, ok := model.(*mcp.MarketplaceModel); ok {
+						app.mcpMarketplace = marketplace
+					}
+					if updateCmd != nil {
+						cmds = append(cmds, updateCmd)
+					}
+
+					// Handle escape to close MCP marketplace
+					if keyMsg, ok := msg.(tea.KeyMsg); ok && keyMsg.String() == "esc" {
+						app.showMCPMarketplace = false
+						app.focused = "tabs"
+						app.mcpMarketplace.Blur()
+					}
 				}
 			}
 		}
@@ -554,20 +764,21 @@ func (app *AppModel) View() string {
 		return app.splashModel.View()
 	}
 
+	// Check if terminal is too small for the main UI
+	if app.splitLayout.IsTooSmall() {
+		return app.splitLayout.RenderTooSmallWarning()
+	}
+
 	// Render the modern split layout
 	mainView := app.splitLayout.View()
 
-	// Add top and bottom bars
-	topBar := app.renderTopBar()
-	bottomBar := app.renderBottomBar()
+	// Add enhanced status bar
+	app.enhancedStatusBar.SetSize(app.width, app.height)
+	statusBar := app.enhancedStatusBar.View()
 
 	// Combine with vertical layout and ensure full width
-	if topBar != "" && bottomBar != "" {
-		mainView = lipgloss.JoinVertical(lipgloss.Left, topBar, mainView, bottomBar)
-	} else if topBar != "" {
-		mainView = lipgloss.JoinVertical(lipgloss.Left, topBar, mainView)
-	} else if bottomBar != "" {
-		mainView = lipgloss.JoinVertical(lipgloss.Left, mainView, bottomBar)
+	if statusBar != "" {
+		mainView = lipgloss.JoinVertical(lipgloss.Left, statusBar, mainView)
 	}
 
 	// Ensure the main view uses the full terminal width
@@ -603,72 +814,67 @@ func (app *AppModel) View() string {
 		)
 	}
 
+	// Overlay model selector if visible
+	if app.showModelSelector {
+		// Send window size message to model selector to ensure proper sizing
+		app.modelSelector.Update(tea.WindowSizeMsg{Width: app.width, Height: app.height})
+		overlay := app.modelSelector.View()
+		// Center the model selector overlay
+		return layout.PlaceOverlay(
+			app.width/2-lipgloss.Width(overlay)/2,
+			app.height/2-lipgloss.Height(overlay)/2,
+			overlay,
+			mainView,
+			true,
+		)
+	}
+
+	// Overlay model settings if visible
+	if app.showModelSettings {
+		app.modelSettings.SetSize(app.width, app.height)
+		overlay := app.modelSettings.View()
+		// Center the model settings overlay
+		return layout.PlaceOverlay(
+			app.width/2-lipgloss.Width(overlay)/2,
+			app.height/2-lipgloss.Height(overlay)/2,
+			overlay,
+			mainView,
+			true,
+		)
+	}
+
+	// Overlay help screen if visible
+	if app.showHelp {
+		app.helpScreen.SetSize(app.width, app.height)
+		overlay := app.helpScreen.View()
+		// Center the help screen overlay
+		return layout.PlaceOverlay(
+			app.width/2-lipgloss.Width(overlay)/2,
+			app.height/2-lipgloss.Height(overlay)/2,
+			overlay,
+			mainView,
+			true,
+		)
+	}
+
+	// Overlay MCP marketplace if visible
+	if app.showMCPMarketplace {
+		app.mcpMarketplace.SetSize(app.width, app.height)
+		overlay := app.mcpMarketplace.View()
+		// Center the MCP marketplace overlay
+		return layout.PlaceOverlay(
+			app.width/2-lipgloss.Width(overlay)/2,
+			app.height/2-lipgloss.Height(overlay)/2,
+			overlay,
+			mainView,
+			true,
+		)
+	}
+
 	// Add toast overlay
 	mainView = app.toastManager.RenderOverlay(mainView)
 
 	return mainView
-}
-
-// renderTopBar renders the top status bar
-func (app *AppModel) renderTopBar() string {
-	t := theme.CurrentTheme()
-
-	var components []string
-
-	// LSP status
-	for name, status := range app.lspStatus {
-		icon := "✓"
-		color := t.LSPRunning()
-		if status != "running" {
-			icon = "❌"
-			color = t.LSPError()
-		}
-
-		lspStyle := lipgloss.NewStyle().Foreground(color)
-		components = append(components, lspStyle.Render(fmt.Sprintf("🔧 %s %s", name, icon)))
-	}
-
-	// Vector DB status
-	dbStyle := lipgloss.NewStyle().Foreground(t.Info())
-	components = append(components, dbStyle.Render(fmt.Sprintf("📊 Vector DB: %s", app.vectorDBStatus)))
-
-	// Git branch
-	gitStyle := lipgloss.NewStyle().Foreground(t.Success())
-	components = append(components, gitStyle.Render(fmt.Sprintf("🌿 %s", app.currentBranch)))
-
-	content := strings.Join(components, " | ")
-
-	return styles.TopBarStyle().
-		Width(app.width).
-		Render(content)
-}
-
-// renderBottomBar renders the bottom status bar
-func (app *AppModel) renderBottomBar() string {
-	t := theme.CurrentTheme()
-
-	// Left side - help text
-	leftStyle := lipgloss.NewStyle().Foreground(t.TextMuted())
-	left := leftStyle.Render("press enter to send, ctrl+q to quit")
-
-	// Right side - model info
-	rightStyle := lipgloss.NewStyle().Foreground(t.Text())
-	right := rightStyle.Render("🤖 Claude 4 Sonnet | 💰 $0.05")
-
-	// Calculate spacing
-	totalWidth := app.width
-	usedWidth := lipgloss.Width(left) + lipgloss.Width(right)
-	spacing := totalWidth - usedWidth
-	if spacing < 0 {
-		spacing = 0
-	}
-
-	spacer := strings.Repeat(" ", spacing)
-	content := left + spacer + right
-
-	return styles.StatusBarStyle().
-		Width(app.width).
-		Render(content)
 }
 
 // updateSizes updates component sizes
@@ -678,6 +884,7 @@ func (app *AppModel) updateSizes() {
 
 	// Update dialog sizes
 	app.initDialog.SetSize(app.width, app.height)
+	app.helpScreen.SetSize(app.width, app.height)
 }
 
 // updateAnimationValues updates component animation values from the animation manager
