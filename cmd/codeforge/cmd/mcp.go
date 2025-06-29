@@ -28,7 +28,7 @@ var mcpListCmd = &cobra.Command{
 	Short: "List MCP server capabilities",
 	Long:  "List the tools, resources, and prompts available in the CodeForge MCP server",
 	RunE: func(cmd *cobra.Command, args []string) error {
-		fmt.Println("CodeForge MCP Server Capabilities:\n")
+		fmt.Println("CodeForge MCP Server Capabilities:")
 
 		fmt.Println("🔧 Tools:")
 		fmt.Println("   • semantic_search - Search for code using semantic similarity")

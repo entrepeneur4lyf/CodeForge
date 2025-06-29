@@ -1,98 +1,102 @@
 package embeddings
 
 import (
+	"bytes"
 	"context"
-	"embed"
 	"encoding/json"
 	"fmt"
-	"io/fs"
+	"io"
+	"net/http"
 	"os"
-	"os/exec"
-	"path/filepath"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/entrepeneur4lyf/codeforge/internal/config"
 )
 
-//go:embed models/minilm-distilled/*
-var embeddedModel embed.FS
+// EmbeddingProvider represents different embedding providers
+type EmbeddingProvider int
 
-// EmbeddingService handles text embedding generation
+const (
+	ProviderOllama EmbeddingProvider = iota
+	ProviderOpenAI
+	ProviderFallback
+)
+
+// EmbeddingService handles text embedding generation with multiple providers
 type EmbeddingService struct {
-	modelPath   string
-	pythonPath  string
-	scriptPath  string
-	tempDir     string
+	provider    EmbeddingProvider
 	initialized bool
 	mu          sync.RWMutex
 }
 
-// EmbeddingResponse represents the response from the embedding service
-type EmbeddingResponse struct {
+// OllamaEmbeddingRequest represents a request to Ollama's embedding API
+type OllamaEmbeddingRequest struct {
+	Model  string `json:"model"`
+	Prompt string `json:"prompt"`
+}
+
+// OllamaEmbeddingResponse represents a response from Ollama's embedding API
+type OllamaEmbeddingResponse struct {
 	Embedding []float64 `json:"embedding"`
-	Error     string    `json:"error,omitempty"`
+}
+
+// OpenAIEmbeddingRequest represents a request to OpenAI's embedding API
+type OpenAIEmbeddingRequest struct {
+	Input          string `json:"input"`
+	Model          string `json:"model"`
+	EncodingFormat string `json:"encoding_format,omitempty"`
+}
+
+// OpenAIEmbeddingResponse represents a response from OpenAI's embedding API
+type OpenAIEmbeddingResponse struct {
+	Data []struct {
+		Embedding []float64 `json:"embedding"`
+	} `json:"data"`
 }
 
 // Global embedding service instance
 var embeddingService *EmbeddingService
 
-// Initialize sets up the embedding service
+// Initialize sets up the embedding service with the best available provider
 func Initialize(cfg *config.Config) error {
-	// Try to initialize native embedding service first
-	if err := InitializeNative(cfg); err != nil {
-		fmt.Printf("Warning: Failed to initialize native embedding service: %v\n", err)
-		fmt.Println("Falling back to Python-based embedding service...")
+	embeddingService = &EmbeddingService{}
 
-		// Fallback to Python-based service
-		return initializePythonService(cfg)
+	// Check config preference first
+	if cfg != nil && cfg.Embedding.Provider != "" {
+		switch cfg.Embedding.Provider {
+		case "ollama":
+			if isOllamaAvailable() {
+				embeddingService.provider = ProviderOllama
+				fmt.Println("Using Ollama embedding service (configured)")
+				embeddingService.initialized = true
+				return nil
+			}
+			fmt.Println("Ollama configured but not available, falling back...")
+		case "openai":
+			if isOpenAIAvailable() {
+				embeddingService.provider = ProviderOpenAI
+				fmt.Println("Using OpenAI embedding service (configured)")
+				embeddingService.initialized = true
+				return nil
+			}
+			fmt.Println("OpenAI configured but not available, falling back...")
+		}
 	}
 
-	fmt.Println("Using native Go embedding service")
-	return nil
-}
+	// Default to fallback (conservative approach)
+	embeddingService.provider = ProviderFallback
+	fmt.Println("Using fallback embedding service (use /embedding to configure)")
 
-// initializePythonService initializes the Python-based embedding service as fallback
-func initializePythonService(cfg *config.Config) error {
-	// Find Python executable
-	pythonPath, err := findPython()
-	if err != nil {
-		return fmt.Errorf("failed to find Python executable: %w", err)
+	// Show available options
+	if isOllamaAvailable() {
+		fmt.Println("💡 Ollama detected - use '/embedding ollama' for better quality")
+	} else if isOpenAIAvailable() {
+		fmt.Println("💡 OpenAI API detected - use '/embedding openai' for better quality")
 	}
 
-	// Create temporary directory for extracted model
-	tempDir, err := os.MkdirTemp("", "codeforge-model-*")
-	if err != nil {
-		return fmt.Errorf("failed to create temp directory: %w", err)
-	}
-
-	// Extract embedded model to temp directory
-	modelPath := filepath.Join(tempDir, "minilm-distilled")
-	if err := extractEmbeddedModel(modelPath); err != nil {
-		os.RemoveAll(tempDir)
-		return fmt.Errorf("failed to extract embedded model: %w", err)
-	}
-
-	// Create embedding service
-	embeddingService = &EmbeddingService{
-		modelPath:  modelPath,
-		pythonPath: pythonPath,
-		tempDir:    tempDir,
-	}
-
-	// Create the Python script for embedding generation
-	if err := embeddingService.createEmbeddingScript(); err != nil {
-		return fmt.Errorf("failed to create embedding script: %w", err)
-	}
-
-	// Mark as initialized before testing
 	embeddingService.initialized = true
-
-	// Test the embedding service
-	if err := embeddingService.testEmbedding(); err != nil {
-		embeddingService.initialized = false
-		return fmt.Errorf("failed to test embedding service: %w", err)
-	}
 	return nil
 }
 
@@ -103,272 +107,209 @@ func Get() *EmbeddingService {
 
 // GetEmbedding generates an embedding using the best available service
 func GetEmbedding(ctx context.Context, text string) ([]float32, error) {
-	// Try native service first
-	if nativeService := GetNative(); nativeService != nil && nativeService.IsInitialized() {
-		return nativeService.GenerateEmbedding(ctx, text)
+	if embeddingService == nil || !embeddingService.initialized {
+		return nil, fmt.Errorf("embedding service not initialized")
 	}
 
-	// Fallback to Python service
-	if embeddingService != nil && embeddingService.IsInitialized() {
-		embedding64, err := embeddingService.GenerateEmbedding(ctx, text)
-		if err != nil {
-			return nil, err
-		}
-		return convertFloat64ToFloat32(embedding64), nil
+	switch embeddingService.provider {
+	case ProviderOllama:
+		return getOllamaEmbedding(ctx, text)
+	case ProviderOpenAI:
+		return getOpenAIEmbedding(ctx, text)
+	default:
+		return getFallbackEmbedding(text), nil
 	}
-
-	return nil, fmt.Errorf("no embedding service available")
-}
-
-// convertFloat64ToFloat32 converts a float64 slice to float32
-func convertFloat64ToFloat32(f64 []float64) []float32 {
-	f32 := make([]float32, len(f64))
-	for i, v := range f64 {
-		f32[i] = float32(v)
-	}
-	return f32
 }
 
 // GetCodeEmbedding generates a code embedding using the best available service
 func GetCodeEmbedding(ctx context.Context, code, language string) ([]float32, error) {
-	// Try native service first
-	if nativeService := GetNative(); nativeService != nil && nativeService.IsInitialized() {
-		return nativeService.GenerateCodeEmbedding(ctx, code, language)
-	}
-
-	// Fallback to Python service
-	if embeddingService != nil && embeddingService.IsInitialized() {
-		embedding64, err := embeddingService.GenerateCodeEmbedding(ctx, code, language)
-		if err != nil {
-			return nil, err
-		}
-		return convertFloat64ToFloat32(embedding64), nil
-	}
-
-	return nil, fmt.Errorf("no embedding service available")
-}
-
-// GenerateEmbedding generates an embedding for the given text
-func (es *EmbeddingService) GenerateEmbedding(ctx context.Context, text string) ([]float64, error) {
-	es.mu.RLock()
-	if !es.initialized {
-		es.mu.RUnlock()
-		return nil, fmt.Errorf("embedding service not initialized")
-	}
-	es.mu.RUnlock()
-
-	// Prepare the command
-	cmd := exec.CommandContext(ctx, es.pythonPath, es.scriptPath, text)
-
-	// Run the command and capture output
-	output, err := cmd.Output()
-	if err != nil {
-		return nil, fmt.Errorf("failed to generate embedding: %w", err)
-	}
-
-	// Parse the JSON response
-	var response EmbeddingResponse
-	if err := json.Unmarshal(output, &response); err != nil {
-		return nil, fmt.Errorf("failed to parse embedding response: %w", err)
-	}
-
-	if response.Error != "" {
-		return nil, fmt.Errorf("embedding generation error: %s", response.Error)
-	}
-
-	return response.Embedding, nil
-}
-
-// GenerateCodeEmbedding generates an embedding specifically for code
-func (es *EmbeddingService) GenerateCodeEmbedding(ctx context.Context, code, language string) ([]float64, error) {
 	// Preprocess code for better embeddings
 	processedCode := preprocessCode(code, language)
-	return es.GenerateEmbedding(ctx, processedCode)
+	return GetEmbedding(ctx, processedCode)
 }
 
-// createEmbeddingScript creates the Python script for embedding generation
-func (es *EmbeddingService) createEmbeddingScript() error {
-	scriptContent := fmt.Sprintf(`#!/usr/bin/env python3
-import sys
-import json
-import traceback
-from sentence_transformers import SentenceTransformer
-
-# Load the model2vec distilled model
-MODEL_PATH = "%s"
-
-try:
-    model = SentenceTransformer(MODEL_PATH)
-except Exception as e:
-    print(json.dumps({"error": f"Failed to load model: {str(e)}"}))
-    sys.exit(1)
-
-def generate_embedding(text):
-    try:
-        # Generate embedding
-        embedding = model.encode(text, convert_to_tensor=False)
-        
-        # Convert to list for JSON serialization
-        embedding_list = embedding.tolist()
-        
-        return {"embedding": embedding_list}
-    except Exception as e:
-        return {"error": f"Failed to generate embedding: {str(e)}"}
-
-if __name__ == "__main__":
-    if len(sys.argv) != 2:
-        print(json.dumps({"error": "Usage: script.py <text>"}))
-        sys.exit(1)
-    
-    text = sys.argv[1]
-    result = generate_embedding(text)
-    print(json.dumps(result))
-`, es.modelPath)
-
-	// Create scripts directory
-	scriptsDir := filepath.Join("scripts")
-	if err := os.MkdirAll(scriptsDir, 0755); err != nil {
-		return fmt.Errorf("failed to create scripts directory: %w", err)
-	}
-
-	// Write the script
-	scriptPath := filepath.Join(scriptsDir, "embed.py")
-	if err := os.WriteFile(scriptPath, []byte(scriptContent), 0755); err != nil {
-		return fmt.Errorf("failed to write embedding script: %w", err)
-	}
-
-	es.scriptPath = scriptPath
-	return nil
-}
-
-// testEmbedding tests the embedding service with a simple text
-func (es *EmbeddingService) testEmbedding() error {
-	ctx := context.Background()
-	testText := "Hello, world!"
-
-	embedding, err := es.GenerateEmbedding(ctx, testText)
+// isOllamaAvailable checks if Ollama is running and has an embedding model
+func isOllamaAvailable() bool {
+	// Check if Ollama is running
+	resp, err := http.Get("http://localhost:11434/api/tags")
 	if err != nil {
-		return fmt.Errorf("embedding test failed: %w", err)
+		return false
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return false
 	}
 
-	// Check that we got a reasonable embedding
-	if len(embedding) == 0 {
-		return fmt.Errorf("received empty embedding")
+	// Check if we have an embedding model (nomic-embed-text is common)
+	var tags struct {
+		Models []struct {
+			Name string `json:"name"`
+		} `json:"models"`
 	}
 
-	// Based on the config, we expect 256-dimensional embeddings
-	expectedDim := 256
-	if len(embedding) != expectedDim {
-		return fmt.Errorf("unexpected embedding dimension: got %d, expected %d", len(embedding), expectedDim)
+	if err := json.NewDecoder(resp.Body).Decode(&tags); err != nil {
+		return false
 	}
 
-	fmt.Printf("Embedding service initialized successfully (dimension: %d)\n", len(embedding))
-	return nil
-}
-
-// findPython finds a suitable Python executable
-func findPython() (string, error) {
-	// Try different Python executables
-	candidates := []string{"python3", "python", "python3.8", "python3.9", "python3.10", "python3.11", "python3.12"}
-
-	for _, candidate := range candidates {
-		if path, err := exec.LookPath(candidate); err == nil {
-			// Test if sentence-transformers is available
-			cmd := exec.Command(path, "-c", "import sentence_transformers")
-			if err := cmd.Run(); err == nil {
-				return path, nil
+	// Look for common embedding models
+	embeddingModels := []string{"nomic-embed-text", "all-minilm", "mxbai-embed-large"}
+	for _, model := range tags.Models {
+		for _, embModel := range embeddingModels {
+			if strings.Contains(model.Name, embModel) {
+				return true
 			}
 		}
 	}
 
-	return "", fmt.Errorf("no suitable Python executable found with sentence-transformers installed")
+	return false
 }
 
-// preprocessCode preprocesses code for better embedding generation
+// isOpenAIAvailable checks if OpenAI API key is available
+func isOpenAIAvailable() bool {
+	return os.Getenv("OPENAI_API_KEY") != ""
+}
+
+// getOllamaEmbedding gets an embedding from Ollama
+func getOllamaEmbedding(ctx context.Context, text string) ([]float32, error) {
+	// Use nomic-embed-text as default, or first available embedding model
+	model := "nomic-embed-text"
+
+	req := OllamaEmbeddingRequest{
+		Model:  model,
+		Prompt: text,
+	}
+
+	jsonData, err := json.Marshal(req)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal request: %w", err)
+	}
+
+	httpReq, err := http.NewRequestWithContext(ctx, "POST", "http://localhost:11434/api/embeddings", bytes.NewBuffer(jsonData))
+	if err != nil {
+		return nil, fmt.Errorf("failed to create request: %w", err)
+	}
+
+	httpReq.Header.Set("Content-Type", "application/json")
+
+	client := &http.Client{Timeout: 30 * time.Second}
+	resp, err := client.Do(httpReq)
+	if err != nil {
+		return nil, fmt.Errorf("failed to make request: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("ollama API error %d: %s", resp.StatusCode, string(body))
+	}
+
+	var ollamaResp OllamaEmbeddingResponse
+	if err := json.NewDecoder(resp.Body).Decode(&ollamaResp); err != nil {
+		return nil, fmt.Errorf("failed to decode response: %w", err)
+	}
+
+	// Convert float64 to float32
+	embedding := make([]float32, len(ollamaResp.Embedding))
+	for i, v := range ollamaResp.Embedding {
+		embedding[i] = float32(v)
+	}
+
+	return embedding, nil
+}
+
+// getOpenAIEmbedding gets an embedding from OpenAI
+func getOpenAIEmbedding(ctx context.Context, text string) ([]float32, error) {
+	apiKey := os.Getenv("OPENAI_API_KEY")
+	if apiKey == "" {
+		return nil, fmt.Errorf("OPENAI_API_KEY not set")
+	}
+
+	req := OpenAIEmbeddingRequest{
+		Input: text,
+		Model: "text-embedding-3-small", // Cheaper and faster than large
+	}
+
+	jsonData, err := json.Marshal(req)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal request: %w", err)
+	}
+
+	httpReq, err := http.NewRequestWithContext(ctx, "POST", "https://api.openai.com/v1/embeddings", bytes.NewBuffer(jsonData))
+	if err != nil {
+		return nil, fmt.Errorf("failed to create request: %w", err)
+	}
+
+	httpReq.Header.Set("Content-Type", "application/json")
+	httpReq.Header.Set("Authorization", "Bearer "+apiKey)
+
+	client := &http.Client{Timeout: 30 * time.Second}
+	resp, err := client.Do(httpReq)
+	if err != nil {
+		return nil, fmt.Errorf("failed to make request: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("openai API error %d: %s", resp.StatusCode, string(body))
+	}
+
+	var openaiResp OpenAIEmbeddingResponse
+	if err := json.NewDecoder(resp.Body).Decode(&openaiResp); err != nil {
+		return nil, fmt.Errorf("failed to decode response: %w", err)
+	}
+
+	if len(openaiResp.Data) == 0 {
+		return nil, fmt.Errorf("no embedding data in response")
+	}
+
+	// Convert float64 to float32
+	embedding := make([]float32, len(openaiResp.Data[0].Embedding))
+	for i, v := range openaiResp.Data[0].Embedding {
+		embedding[i] = float32(v)
+	}
+
+	return embedding, nil
+}
+
+// getFallbackEmbedding creates a simple hash-based embedding as fallback
+func getFallbackEmbedding(text string) []float32 {
+	// Simple hash-based pseudo-embedding for fallback
+	// This is basic but ensures the system always works
+	const embeddingDim = 384
+
+	embedding := make([]float32, embeddingDim)
+	text = strings.ToLower(text)
+
+	// Use a simple hash function to generate pseudo-embeddings
+	for i := 0; i < embeddingDim; i++ {
+		hash := 0
+		for j, char := range text {
+			hash = hash*31 + int(char) + i + j
+		}
+		// Normalize to [-1, 1] range
+		embedding[i] = float32((hash%2000)-1000) / 1000.0
+	}
+
+	return embedding
+}
+
+// preprocessCode preprocesses code for better embeddings
 func preprocessCode(code, language string) string {
 	// Remove excessive whitespace
 	lines := strings.Split(code, "\n")
-	var processedLines []string
+	var cleanLines []string
 
 	for _, line := range lines {
-		trimmed := strings.TrimSpace(line)
-		if trimmed != "" {
-			processedLines = append(processedLines, trimmed)
+		line = strings.TrimSpace(line)
+		if line != "" {
+			cleanLines = append(cleanLines, line)
 		}
 	}
 
-	processed := strings.Join(processedLines, "\n")
+	processed := strings.Join(cleanLines, "\n")
 
-	// Add language context for better embeddings
+	// Add language context
 	return fmt.Sprintf("Language: %s\nCode:\n%s", language, processed)
-}
-
-// IsInitialized returns whether the embedding service is initialized
-func (es *EmbeddingService) IsInitialized() bool {
-	if es == nil {
-		return false
-	}
-	es.mu.RLock()
-	defer es.mu.RUnlock()
-	return es.initialized
-}
-
-// extractEmbeddedModel extracts the embedded model files to the specified directory
-func extractEmbeddedModel(targetDir string) error {
-	// Create target directory
-	if err := os.MkdirAll(targetDir, 0755); err != nil {
-		return fmt.Errorf("failed to create target directory: %w", err)
-	}
-
-	// Walk through embedded files
-	return fs.WalkDir(embeddedModel, "models/minilm-distilled", func(path string, d fs.DirEntry, err error) error {
-		if err != nil {
-			return err
-		}
-
-		// Skip the root directory
-		if path == "models/minilm-distilled" {
-			return nil
-		}
-
-		// Calculate relative path
-		relPath, err := filepath.Rel("models/minilm-distilled", path)
-		if err != nil {
-			return err
-		}
-
-		targetPath := filepath.Join(targetDir, relPath)
-
-		if d.IsDir() {
-			return os.MkdirAll(targetPath, 0755)
-		}
-
-		// Read embedded file
-		data, err := embeddedModel.ReadFile(path)
-		if err != nil {
-			return fmt.Errorf("failed to read embedded file %s: %w", path, err)
-		}
-
-		// Write to target location
-		if err := os.WriteFile(targetPath, data, 0644); err != nil {
-			return fmt.Errorf("failed to write file %s: %w", targetPath, err)
-		}
-
-		return nil
-	})
-}
-
-// Close cleans up the embedding service
-func (es *EmbeddingService) Close() error {
-	// Clean up the script file
-	if es.scriptPath != "" {
-		os.Remove(es.scriptPath)
-	}
-
-	// Clean up temporary directory
-	if es.tempDir != "" {
-		os.RemoveAll(es.tempDir)
-	}
-
-	return nil
 }

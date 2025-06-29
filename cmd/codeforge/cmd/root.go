@@ -1,13 +1,19 @@
 package cmd
 
 import (
+	"bufio"
 	"fmt"
 	"os"
+	"os/signal"
+	"strings"
+	"syscall"
 
+	"github.com/entrepeneur4lyf/codeforge/internal/chat"
 	"github.com/entrepeneur4lyf/codeforge/internal/config"
 	"github.com/entrepeneur4lyf/codeforge/internal/embeddings"
 	"github.com/entrepeneur4lyf/codeforge/internal/llm"
 	"github.com/entrepeneur4lyf/codeforge/internal/lsp"
+	"github.com/entrepeneur4lyf/codeforge/internal/ml"
 	"github.com/entrepeneur4lyf/codeforge/internal/vectordb"
 	"github.com/spf13/cobra"
 )
@@ -17,19 +23,33 @@ var (
 	workingDir string
 )
 
+var (
+	quiet    bool
+	model    string
+	provider string
+	format   string
+)
+
 var rootCmd = &cobra.Command{
-	Use:   "codeforge",
-	Short: "AI-powered coding assistant with multi-language support",
-	Long: `CodeForge is a next-generation AI coding assistant that combines the best features
-from leading tools to provide comprehensive development support.
+	Use:   "codeforge [prompt]",
+	Short: "AI-powered coding assistant",
+	Long: `CodeForge is an AI coding assistant that helps with development tasks.
+
+Usage:
+  codeforge                    # Start interactive chat
+  codeforge "your question"    # Get direct answer
+  echo "question" | codeforge  # Pipe input
 
 Features:
 - Multi-provider LLM support (OpenAI, Claude, Gemini, Groq, and more)
-- Universal build system for 7+ programming languages
-- Intelligent error detection and AI-powered fixing
-- Advanced terminal UI with code intelligence
-- Vector-based semantic code search
-- Real-time collaboration and team features`,
+- Build and fix projects automatically
+- Semantic code search and analysis
+- LSP integration for code intelligence
+- MCP tool integration`,
+	DisableAutoGenTag: true,
+	SilenceUsage:      true,
+	SilenceErrors:     false,
+	Args:              cobra.ArbitraryArgs, // Accept any arguments
 	PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
 		// Initialize configuration
 		cfg, err := config.Load(workingDir, debug)
@@ -59,10 +79,29 @@ Features:
 			return fmt.Errorf("failed to initialize vector database: %w", err)
 		}
 
+		// Initialize ML service (graceful degradation if it fails)
+		if err := ml.Initialize(cfg); err != nil {
+			// Don't fail the entire application if ML initialization fails
+			fmt.Printf("⚠️  ML features disabled: %v\n", err)
+		}
+
 		return nil
 	},
 	Run: func(cmd *cobra.Command, args []string) {
-		cmd.Help()
+		// Handle different input modes like Gemini CLI
+		if len(args) > 0 {
+			// Direct prompt mode: codeforge "question"
+			prompt := strings.Join(args, " ")
+			handleDirectPrompt(prompt)
+		} else {
+			// Check for piped input
+			if hasStdinInput() {
+				handlePipedInput()
+			} else {
+				// Interactive mode (default)
+				startInteractiveMode()
+			}
+		}
 	},
 }
 
@@ -73,8 +112,13 @@ func init() {
 		wd = "."
 	}
 
+	// Add flags for the new CLI pattern
 	rootCmd.PersistentFlags().BoolVar(&debug, "debug", false, "Enable debug mode")
 	rootCmd.PersistentFlags().StringVar(&workingDir, "wd", wd, "Working directory")
+	rootCmd.Flags().BoolVarP(&quiet, "quiet", "q", false, "Quiet mode - output only the answer")
+	rootCmd.Flags().StringVarP(&model, "model", "m", "", "Specify the model to use")
+	rootCmd.Flags().StringVarP(&provider, "provider", "p", "", "Specify the provider (anthropic, openai, openrouter, etc.)")
+	rootCmd.Flags().StringVar(&format, "format", "text", "Output format (text, json, markdown)")
 }
 
 func Execute() {
@@ -82,4 +126,145 @@ func Execute() {
 		fmt.Println(err)
 		os.Exit(1)
 	}
+}
+
+// handleDirectPrompt processes a direct prompt with real LLM integration
+func handleDirectPrompt(prompt string) {
+	// Determine model to use
+	selectedModel := model
+	if selectedModel == "" {
+		selectedModel = chat.GetDefaultModel()
+	}
+
+	// Get API key for the model
+	apiKey := chat.GetAPIKeyForModel(selectedModel)
+	if apiKey == "" {
+		if quiet {
+			fmt.Println("Error: No API key found. Set ANTHROPIC_API_KEY, OPENAI_API_KEY, or GEMINI_API_KEY environment variable.")
+		} else {
+			fmt.Println("❌ Error: No API key found")
+			fmt.Println("Please set one of these environment variables:")
+			fmt.Println("  - ANTHROPIC_API_KEY (for Claude models)")
+			fmt.Println("  - OPENAI_API_KEY (for GPT models)")
+			fmt.Println("  - GEMINI_API_KEY (for Gemini models)")
+		}
+		os.Exit(1)
+	}
+
+	// Create chat session
+	session, err := chat.NewChatSession(selectedModel, apiKey, provider, quiet, format)
+	if err != nil {
+		if quiet {
+			fmt.Printf("Error: %v\n", err)
+		} else {
+			fmt.Printf("❌ Error creating chat session: %v\n", err)
+		}
+		os.Exit(1)
+	}
+
+	// Process the message
+	response, err := session.ProcessMessage(prompt)
+	if err != nil {
+		if quiet {
+			fmt.Printf("Error: %v\n", err)
+		} else {
+			fmt.Printf("❌ Error: %v\n", err)
+		}
+		os.Exit(1)
+	}
+
+	// In quiet mode, response is already printed during streaming
+	// In non-quiet mode, we need to print it since streaming was shown
+	if quiet {
+		// Response was not streamed, so print it now
+		fmt.Println(response)
+	}
+}
+
+func hasStdinInput() bool {
+	// Check if stdin is not a terminal (pipe or redirect)
+	stat, err := os.Stdin.Stat()
+	if err != nil {
+		return false
+	}
+
+	// If stdin is not a character device, it's piped or redirected
+	return (stat.Mode() & os.ModeCharDevice) == 0
+}
+
+func handlePipedInput() {
+	fmt.Println("Reading from stdin...")
+
+	// Read all input from stdin
+	scanner := bufio.NewScanner(os.Stdin)
+	var lines []string
+
+	for scanner.Scan() {
+		lines = append(lines, scanner.Text())
+	}
+
+	if err := scanner.Err(); err != nil {
+		fmt.Printf("Error reading stdin: %v\n", err)
+		return
+	}
+
+	if len(lines) == 0 {
+		fmt.Println("No input received from stdin")
+		return
+	}
+
+	// Join all lines into a single prompt
+	prompt := strings.Join(lines, "\n")
+
+	// Handle as direct prompt
+	handleDirectPrompt(prompt)
+}
+
+func startInteractiveMode() {
+	// Determine model to use
+	selectedModel := model
+	if selectedModel == "" {
+		selectedModel = chat.GetDefaultModel()
+	}
+
+	// Get API key for the model
+	apiKey := chat.GetAPIKeyForModel(selectedModel)
+	if apiKey == "" {
+		fmt.Println("❌ Error: No API key found")
+		fmt.Println("Please set one of these environment variables:")
+		fmt.Println("  - ANTHROPIC_API_KEY (for Claude models)")
+		fmt.Println("  - OPENAI_API_KEY (for GPT models)")
+		fmt.Println("  - GEMINI_API_KEY (for Gemini models)")
+		os.Exit(1)
+	}
+
+	// Create chat session
+	session, err := chat.NewChatSession(selectedModel, apiKey, provider, quiet, format)
+	if err != nil {
+		fmt.Printf("❌ Error creating chat session: %v\n", err)
+		os.Exit(1)
+	}
+
+	// Start interactive chat
+	if err := session.StartInteractive(); err != nil {
+		fmt.Printf("❌ Error in interactive mode: %v\n", err)
+		os.Exit(1)
+	}
+}
+
+// init sets up signal handling for graceful shutdown
+func init() {
+	// Set up signal handling for graceful shutdown
+	c := make(chan os.Signal, 1)
+	signal.Notify(c, os.Interrupt, syscall.SIGTERM)
+
+	go func() {
+		<-c
+		fmt.Println("\n🔄 Shutting down gracefully...")
+
+		// Shutdown ML service
+		ml.Shutdown()
+
+		os.Exit(0)
+	}()
 }

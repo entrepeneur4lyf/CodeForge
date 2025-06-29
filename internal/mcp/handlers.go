@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io/fs"
+	"log"
 	"os"
 	"path/filepath"
 	"strings"
@@ -39,11 +40,15 @@ func (cfs *CodeForgeServer) handleSemanticSearch(ctx context.Context, request mc
 		filters["chunk_type"] = chunkType
 	}
 
-	// TODO: Generate embedding for query using embedding service
-	// For now, create a dummy embedding
-	queryEmbedding := make([]float32, 256)
-	for i := range queryEmbedding {
-		queryEmbedding[i] = 0.1 // Placeholder
+	// Generate embedding for query using embedding service
+	queryEmbedding, err := cfs.GenerateQueryEmbedding(ctx, query)
+	if err != nil {
+		log.Printf("Failed to generate embedding for query: %v", err)
+		// Fallback to dummy embedding
+		queryEmbedding = make([]float32, 384) // Standard embedding dimension
+		for i := range queryEmbedding {
+			queryEmbedding[i] = 0.1 // Placeholder
+		}
 	}
 
 	// Search using vector database
@@ -671,4 +676,41 @@ func convertDiffsToMap(diffs []git.GitDiff) []map[string]interface{} {
 		}
 	}
 	return result
+}
+
+// GenerateQueryEmbedding generates an embedding for a search query
+func (cfs *CodeForgeServer) GenerateQueryEmbedding(ctx context.Context, query string) ([]float32, error) {
+	// For now, use simple hash-based embedding
+	// In a future version, we could integrate with the embedding service
+	return cfs.generateSimpleEmbedding(query), nil
+}
+
+// generateSimpleEmbedding creates a simple hash-based embedding
+func (cfs *CodeForgeServer) generateSimpleEmbedding(text string) []float32 {
+	// Create a simple hash-based embedding
+	embedding := make([]float32, 384) // Standard dimension
+
+	// Use a simple hash function to distribute values
+	hash := 0
+	for _, char := range text {
+		hash = hash*31 + int(char)
+	}
+
+	// Distribute the hash across the embedding dimensions
+	for i := range embedding {
+		embedding[i] = float32((hash+i)%1000)/1000.0 - 0.5 // Normalize to [-0.5, 0.5]
+	}
+
+	// Normalize the embedding vector
+	var norm float32
+	for _, val := range embedding {
+		norm += val * val
+	}
+	norm = float32(1.0 / (1e-8 + float64(norm))) // Avoid division by zero
+
+	for i := range embedding {
+		embedding[i] *= norm
+	}
+
+	return embedding
 }

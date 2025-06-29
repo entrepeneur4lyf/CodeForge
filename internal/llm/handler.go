@@ -241,7 +241,7 @@ var (
 // Initialize initializes the LLM package with default configuration
 func Initialize(cfg interface{}) error {
 	// For now, just mark as initialized
-	// In a real implementation, this would set up default providers using the config
+	// Provider setup is handled by the CLI initialization
 	initialized = true
 	return nil
 }

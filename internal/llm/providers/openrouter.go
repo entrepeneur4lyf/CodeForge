@@ -7,12 +7,27 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"regexp"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/entrepeneur4lyf/codeforge/internal/llm"
 	"github.com/entrepeneur4lyf/codeforge/internal/llm/models"
 	"github.com/entrepeneur4lyf/codeforge/internal/llm/transform"
+)
+
+// OpenRouterModelsCache represents cached model data with TTL
+type OpenRouterModelsCache struct {
+	models    []OpenRouterModel
+	timestamp time.Time
+	mutex     sync.RWMutex
+}
+
+// Global cache instance with 24-hour TTL
+var (
+	modelsCache = &OpenRouterModelsCache{}
+	cacheTTL    = 24 * time.Hour // 86400 seconds
 )
 
 // OpenRouterHandler implements the ApiHandler interface for OpenRouter's unified API
@@ -457,8 +472,37 @@ func (h *OpenRouterHandler) processStream(reader io.Reader, streamChan chan<- ll
 	}
 }
 
-// GetOpenRouterModels fetches available models from OpenRouter
+// isModelsCacheValid checks if the cached models are still valid
+func (c *OpenRouterModelsCache) isValid() bool {
+	c.mutex.RLock()
+	defer c.mutex.RUnlock()
+	return time.Since(c.timestamp) < cacheTTL && len(c.models) > 0
+}
+
+// getCachedModels returns cached models if valid
+func (c *OpenRouterModelsCache) getCachedModels() ([]OpenRouterModel, bool) {
+	c.mutex.RLock()
+	defer c.mutex.RUnlock()
+	if time.Since(c.timestamp) < cacheTTL && len(c.models) > 0 {
+		return c.models, true
+	}
+	return nil, false
+}
+
+// setCachedModels stores models in cache
+func (c *OpenRouterModelsCache) setCachedModels(models []OpenRouterModel) {
+	c.mutex.Lock()
+	defer c.mutex.Unlock()
+	c.models = models
+	c.timestamp = time.Now()
+}
+
+// GetOpenRouterModels fetches available models from OpenRouter with caching
 func (h *OpenRouterHandler) GetOpenRouterModels(ctx context.Context) ([]OpenRouterModel, error) {
+	// Check cache first
+	if cachedModels, valid := modelsCache.getCachedModels(); valid {
+		return cachedModels, nil
+	}
 	req, err := http.NewRequestWithContext(ctx, "GET", h.baseURL+"/models", nil)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create request: %w", err)
@@ -482,7 +526,121 @@ func (h *OpenRouterHandler) GetOpenRouterModels(ctx context.Context) ([]OpenRout
 		return nil, fmt.Errorf("failed to decode response: %w", err)
 	}
 
+	// Cache the results
+	modelsCache.setCachedModels(response.Data)
+
 	return response.Data, nil
+}
+
+// GetTopOpenRouterModels fetches the top N models from OpenRouter (cached)
+func (h *OpenRouterHandler) GetTopOpenRouterModels(ctx context.Context, limit int) ([]OpenRouterModel, error) {
+	// Get all models first (this will use cache if available)
+	allModels, err := h.GetOpenRouterModels(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("failed to fetch models: %w", err)
+	}
+
+	// Get popular models from rankings (with fallback to curated list)
+	popularModelIDs, err := scrapeOpenRouterRankings(ctx)
+	if err != nil {
+		// Fallback to curated list if scraping fails
+		popularModelIDs = getCuratedTopModels()
+	}
+
+	// Create a map for quick lookup
+	modelMap := make(map[string]OpenRouterModel)
+	for _, model := range allModels {
+		modelMap[model.ID] = model
+	}
+
+	// First, try to get popular models in order
+	var selectedModels []OpenRouterModel
+	for _, modelID := range popularModelIDs {
+		if model, exists := modelMap[modelID]; exists {
+			selectedModels = append(selectedModels, model)
+			if len(selectedModels) >= limit {
+				break
+			}
+		}
+	}
+
+	// If we don't have enough popular models, add others
+	if len(selectedModels) < limit {
+		for _, model := range allModels {
+			// Skip if already added
+			found := false
+			for _, selected := range selectedModels {
+				if selected.ID == model.ID {
+					found = true
+					break
+				}
+			}
+			if !found {
+				selectedModels = append(selectedModels, model)
+				if len(selectedModels) >= limit {
+					break
+				}
+			}
+		}
+	}
+
+	return selectedModels, nil
+}
+
+// GetTopOpenRouterModelsByRanking is a public function to get top OpenRouter models
+func GetTopOpenRouterModelsByRanking(ctx context.Context, apiKey string, limit int) ([]OpenRouterModel, error) {
+	if apiKey == "" {
+		// No API key - try scraping rankings instead of using API
+		return getTopModelsFromScraping(ctx, limit)
+	}
+
+	options := llm.ApiHandlerOptions{
+		OpenRouterAPIKey: apiKey,
+	}
+
+	handler := NewOpenRouterHandler(options)
+	return handler.GetTopOpenRouterModels(ctx, limit)
+}
+
+// getTopModelsFromScraping gets models from scraping when no API key is available
+func getTopModelsFromScraping(ctx context.Context, limit int) ([]OpenRouterModel, error) {
+	// Get model IDs from scraping
+	modelIDs, err := scrapeOpenRouterRankings(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("failed to scrape rankings: %w", err)
+	}
+
+	// Convert model IDs to OpenRouterModel structs
+	var models []OpenRouterModel
+	for i, modelID := range modelIDs {
+		if i >= limit {
+			break
+		}
+
+		// Extract name from ID (provider/model-name)
+		parts := strings.Split(modelID, "/")
+		name := modelID
+		if len(parts) == 2 {
+			name = strings.Title(strings.ReplaceAll(parts[1], "-", " "))
+		}
+
+		model := OpenRouterModel{
+			ID:   modelID,
+			Name: name,
+		}
+		models = append(models, model)
+	}
+
+	return models, nil
+}
+
+// GetOpenRouterCacheStatus returns cache information for debugging
+func GetOpenRouterCacheStatus() (bool, time.Time, int) {
+	modelsCache.mutex.RLock()
+	defer modelsCache.mutex.RUnlock()
+
+	isValid := time.Since(modelsCache.timestamp) < cacheTTL && len(modelsCache.models) > 0
+	return isValid, modelsCache.timestamp, len(modelsCache.models)
 }
 
 // OpenRouterModel represents a model from OpenRouter's model list
@@ -494,6 +652,27 @@ type OpenRouterModel struct {
 	ContextLength int                    `json:"context_length"`
 	Architecture  OpenRouterArchitecture `json:"architecture"`
 	TopProvider   OpenRouterTopProvider  `json:"top_provider"`
+	Created       int64                  `json:"created"`
+
+	// Enhanced endpoint information for detailed model data
+	Endpoints []OpenRouterEndpoint `json:"endpoints,omitempty"`
+}
+
+// OpenRouterEndpoint represents a provider endpoint for a model
+type OpenRouterEndpoint struct {
+	Name                string                    `json:"name"`
+	ContextLength       int                       `json:"context_length"`
+	Pricing             OpenRouterEndpointPricing `json:"pricing"`
+	ProviderName        string                    `json:"provider_name"`
+	SupportedParameters []string                  `json:"supported_parameters"`
+}
+
+// OpenRouterEndpointPricing represents pricing for a specific endpoint
+type OpenRouterEndpointPricing struct {
+	Request    string `json:"request"`
+	Image      string `json:"image"`
+	Prompt     string `json:"prompt"`
+	Completion string `json:"completion"`
 }
 
 // OpenRouterModelPricing represents pricing information
@@ -520,4 +699,189 @@ type OpenRouterTopProvider struct {
 // OpenRouterModelsResponse represents the response from /models endpoint
 type OpenRouterModelsResponse struct {
 	Data []OpenRouterModel `json:"data"`
+}
+
+// scrapeOpenRouterRankings fetches models from OpenRouter API
+func scrapeOpenRouterRankings(ctx context.Context) ([]string, error) {
+	// Use the public OpenRouter API to get all models
+	req, err := http.NewRequestWithContext(ctx, "GET", "https://openrouter.ai/api/v1/models", nil)
+	if err != nil {
+		return getCuratedTopModels(), nil
+	}
+
+	req.Header.Set("User-Agent", "CodeForge/1.0")
+	req.Header.Set("Accept", "application/json")
+
+	client := &http.Client{Timeout: 15 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return getCuratedTopModels(), nil
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return getCuratedTopModels(), nil
+	}
+
+	var response struct {
+		Data []struct {
+			ID      string `json:"id"`
+			Name    string `json:"name"`
+			Created int64  `json:"created"`
+		} `json:"data"`
+	}
+
+	if err := json.NewDecoder(resp.Body).Decode(&response); err != nil {
+		return getCuratedTopModels(), nil
+	}
+
+	// Sort by creation date (newest first) and take top 20
+	models := response.Data
+	if len(models) == 0 {
+		return getCuratedTopModels(), nil
+	}
+
+	// Sort by created timestamp (newest first)
+	for i := 0; i < len(models)-1; i++ {
+		for j := i + 1; j < len(models); j++ {
+			if models[i].Created < models[j].Created {
+				models[i], models[j] = models[j], models[i]
+			}
+		}
+	}
+
+	// Extract model IDs, prioritizing popular providers
+	var modelIDs []string
+	popularProviders := []string{"anthropic", "openai", "google", "mistralai", "deepseek", "x-ai", "meta-llama"}
+
+	// First pass: get models from popular providers
+	for _, provider := range popularProviders {
+		for _, model := range models {
+			if strings.HasPrefix(model.ID, provider+"/") {
+				modelIDs = append(modelIDs, model.ID)
+				if len(modelIDs) >= 20 {
+					return modelIDs, nil
+				}
+			}
+		}
+	}
+
+	// Second pass: fill remaining slots with any models
+	for _, model := range models {
+		found := false
+		for _, existing := range modelIDs {
+			if existing == model.ID {
+				found = true
+				break
+			}
+		}
+		if !found {
+			modelIDs = append(modelIDs, model.ID)
+			if len(modelIDs) >= 20 {
+				break
+			}
+		}
+	}
+
+	if len(modelIDs) > 0 {
+		return modelIDs, nil
+	}
+
+	return getCuratedTopModels(), nil
+}
+
+// parseModelsFromHTML extracts model IDs from HTML content
+func parseModelsFromHTML(html string) []string {
+	var models []string
+
+	// Look for model IDs in common patterns
+	patterns := []string{
+		// JSON data with model IDs
+		`"id"\s*:\s*"([a-zA-Z0-9_-]+/[a-zA-Z0-9_.-]+)"`,
+		// Links to models
+		`href="[^"]*models/([a-zA-Z0-9_-]+/[a-zA-Z0-9_.-]+)"`,
+		// Direct model references
+		`(anthropic/claude-[a-zA-Z0-9_.-]+)`,
+		`(openai/gpt-[a-zA-Z0-9_.-]+)`,
+		`(google/gemini-[a-zA-Z0-9_.-]+)`,
+		`(meta-llama/[a-zA-Z0-9_.-]+)`,
+		`(mistralai/[a-zA-Z0-9_.-]+)`,
+		`(qwen/[a-zA-Z0-9_.-]+)`,
+		`(deepseek/[a-zA-Z0-9_.-]+)`,
+		`(x-ai/[a-zA-Z0-9_.-]+)`,
+		`(cohere/[a-zA-Z0-9_.-]+)`,
+		`(nvidia/[a-zA-Z0-9_.-]+)`,
+		`(microsoft/[a-zA-Z0-9_.-]+)`,
+		`(perplexity/[a-zA-Z0-9_.-]+)`,
+	}
+
+	seen := make(map[string]bool)
+
+	for _, pattern := range patterns {
+		re := regexp.MustCompile(pattern)
+		matches := re.FindAllStringSubmatch(html, -1)
+
+		for _, match := range matches {
+			if len(match) > 1 {
+				modelID := match[1]
+				if !seen[modelID] && strings.Contains(modelID, "/") {
+					models = append(models, modelID)
+					seen[modelID] = true
+
+					// Stop at 20 models
+					if len(models) >= 20 {
+						return models
+					}
+				}
+			}
+		}
+	}
+
+	return models
+}
+
+// getCuratedTopModels returns a curated list of top models based on popularity
+func getCuratedTopModels() []string {
+	return []string{
+		// Latest Anthropic models (June 2025)
+		"anthropic/claude-3.5-sonnet-20241022",
+		"anthropic/claude-3.5-haiku-20241022",
+		"anthropic/claude-3-opus-20240229",
+
+		// Latest OpenAI models (June 2025)
+		"openai/gpt-4o-2024-08-06",
+		"openai/gpt-4o-mini-2024-07-18",
+		"openai/o1-preview-2024-09-12",
+		"openai/o1-mini-2024-09-12",
+		"openai/chatgpt-4o-latest",
+
+		// Latest Google models (June 2025)
+		"google/gemini-2.5-pro",
+		"google/gemini-2.5-flash",
+		"google/gemini-pro-1.5-latest",
+
+		// Latest Meta/Llama models (June 2025)
+		"meta-llama/llama-3.3-70b-instruct",
+		"meta-llama/llama-3.1-405b-instruct",
+		"meta-llama/llama-3.1-70b-instruct",
+
+		// Latest Mistral models (June 2025)
+		"mistralai/mistral-large-2407",
+		"mistralai/mistral-small-3.2-24b-instruct",
+		"mistralai/magistral-medium-2506",
+
+		// Latest DeepSeek models (June 2025)
+		"deepseek/deepseek-r1-0528",
+		"deepseek/deepseek-r1-distill-qwen-7b",
+
+		// Latest xAI models (June 2025)
+		"x-ai/grok-3",
+		"x-ai/grok-3-mini",
+
+		// Other current models (June 2025)
+		"cohere/command-r-plus-08-2024",
+		"minimax/minimax-m1",
+		"moonshotai/kimi-dev-72b",
+		"inception/mercury",
+	}
 }

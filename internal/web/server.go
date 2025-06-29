@@ -1830,7 +1830,7 @@ func (s *Server) handleMCPResources(w http.ResponseWriter, r *http.Request) {
 // handleStatus returns system status
 func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 	status := map[string]interface{}{
-		"embedding": embeddings.GetNative() != nil && embeddings.GetNative().IsInitialized(),
+		"embedding": embeddings.Get() != nil,
 		"vectordb":  vectordb.Get() != nil,
 		"lsp":       lsp.GetManager() != nil,
 		"mcp":       true, // MCP server is available as standalone

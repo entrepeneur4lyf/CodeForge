@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"sync"
 
 	"github.com/entrepeneur4lyf/codeforge/internal/lsp"
 	"github.com/entrepeneur4lyf/codeforge/internal/vectordb"
@@ -12,13 +13,16 @@ import (
 
 // SymbolExtractor provides enhanced symbol extraction using LSP
 type SymbolExtractor struct {
-	lspManager *lsp.Manager
+	lspManager    *lsp.Manager
+	mu            sync.RWMutex
+	openDocuments map[string]bool
 }
 
 // NewSymbolExtractor creates a new symbol extractor
 func NewSymbolExtractor() *SymbolExtractor {
 	return &SymbolExtractor{
-		lspManager: lsp.GetManager(),
+		lspManager:    lsp.GetManager(),
+		openDocuments: make(map[string]bool),
 	}
 }
 
@@ -57,13 +61,10 @@ func (se *SymbolExtractor) ExtractWorkspaceSymbols(ctx context.Context, query st
 
 	allSymbols := []vectordb.Symbol{}
 
-	// For now, just try to get symbols from any available client
-	// TODO: Implement GetAllClients method in LSP manager
+	// Get symbols from all available LSP clients
 	if se.lspManager != nil {
-		// Try to get a client for common languages
-		languages := []string{"go", "javascript", "python", "rust", "typescript"}
-		for _, lang := range languages {
-			client := se.lspManager.GetClientForLanguage(lang)
+		clients := se.lspManager.GetAllClients()
+		for _, client := range clients {
 			if client != nil && client.GetState() == lsp.StateReady {
 				symbols, err := client.GetWorkspaceSymbols(ctx, query)
 				if err != nil {
@@ -159,9 +160,45 @@ func (se *SymbolExtractor) GetHover(ctx context.Context, filePath string, line, 
 
 // ensureDocumentOpen ensures a document is open in the LSP client
 func (se *SymbolExtractor) ensureDocumentOpen(ctx context.Context, client *lsp.Client, filePath, content, language string) error {
-	// For now, assume document is already open or will be opened by LSP client
-	// TODO: Implement document open tracking and opening
+	// Check if document is already tracked
+	if se.isDocumentOpen(filePath) {
+		return nil
+	}
+
+	// Open the document in the LSP client
+	err := client.OpenFile(ctx, filePath)
+	if err != nil {
+		return fmt.Errorf("failed to open document %s: %w", filePath, err)
+	}
+
+	// Track the opened document
+	se.trackDocument(filePath)
+
 	return nil
+}
+
+// isDocumentOpen checks if a document is already tracked as open
+func (se *SymbolExtractor) isDocumentOpen(filePath string) bool {
+	se.mu.RLock()
+	defer se.mu.RUnlock()
+
+	if se.openDocuments == nil {
+		se.openDocuments = make(map[string]bool)
+	}
+
+	return se.openDocuments[filePath]
+}
+
+// trackDocument adds a document to the tracking list
+func (se *SymbolExtractor) trackDocument(filePath string) {
+	se.mu.Lock()
+	defer se.mu.Unlock()
+
+	if se.openDocuments == nil {
+		se.openDocuments = make(map[string]bool)
+	}
+
+	se.openDocuments[filePath] = true
 }
 
 // convertLSPSymbols converts LSP DocumentSymbols to our Symbol format

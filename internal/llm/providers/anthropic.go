@@ -330,7 +330,7 @@ func (h *AnthropicHandler) streamRequest(ctx context.Context, request AnthropicR
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("x-api-key", h.options.APIKey)
 	req.Header.Set("anthropic-version", "2023-06-01")
-	req.Header.Set("anthropic-beta", "prompt-caching-2024-07-31,thinking-2024-12-19")
+	req.Header.Set("anthropic-beta", "prompt-caching-2024-07-31")
 
 	// Make request
 	resp, err := h.client.Do(req)

@@ -2,9 +2,12 @@ package providers
 
 import (
 	"fmt"
+	"os"
+	"strings"
 
 	"github.com/entrepeneur4lyf/codeforge/internal/llm"
 	"github.com/entrepeneur4lyf/codeforge/internal/llm/models"
+	"github.com/entrepeneur4lyf/codeforge/internal/llm/transform"
 )
 
 // BuildApiHandler creates an API handler based on the provider type
@@ -36,8 +39,7 @@ func BuildApiHandler(options llm.ApiHandlerOptions) (llm.ApiHandler, error) {
 	case llm.ProviderGemini:
 		handler = NewGeminiHandler(options)
 	case llm.ProviderOpenRouter:
-		// TODO: Implement OpenRouter handler
-		return nil, fmt.Errorf("OpenRouter provider not yet implemented")
+		handler = NewOpenRouterHandler(options)
 	case llm.ProviderBedrock:
 		// TODO: Implement Bedrock handler
 		return nil, fmt.Errorf("Bedrock provider not yet implemented")
@@ -45,31 +47,27 @@ func BuildApiHandler(options llm.ApiHandlerOptions) (llm.ApiHandler, error) {
 		// TODO: Implement Vertex handler
 		return nil, fmt.Errorf("Vertex provider not yet implemented")
 	case llm.ProviderDeepSeek:
-		// TODO: Implement DeepSeek handler
-		return nil, fmt.Errorf("DeepSeek provider not yet implemented")
+		handler = NewDeepSeekHandler(options)
 	case llm.ProviderTogether:
-		// TODO: Implement Together handler
+		// TODO: Implement Together handler (OpenAI-compatible)
 		return nil, fmt.Errorf("Together provider not yet implemented")
 	case llm.ProviderFireworks:
-		// TODO: Implement Fireworks handler
+		// TODO: Implement Fireworks handler (OpenAI-compatible)
 		return nil, fmt.Errorf("Fireworks provider not yet implemented")
 	case llm.ProviderCerebras:
-		// TODO: Implement Cerebras handler
+		// TODO: Implement Cerebras handler (OpenAI-compatible)
 		return nil, fmt.Errorf("Cerebras provider not yet implemented")
 	case llm.ProviderGroq:
 		handler = NewGroqHandler(options)
 	case llm.ProviderOllama:
-		// TODO: Implement Ollama handler
-		return nil, fmt.Errorf("Ollama provider not yet implemented")
+		handler = NewOllamaHandler(options)
 	case llm.ProviderLMStudio:
-		// TODO: Implement LM Studio handler
+		// TODO: Implement LM Studio handler (OpenAI-compatible)
 		return nil, fmt.Errorf("LM Studio provider not yet implemented")
 	case llm.ProviderXAI:
-		// TODO: Implement XAI handler
-		return nil, fmt.Errorf("XAI provider not yet implemented")
+		handler = NewXAIHandler(options)
 	case llm.ProviderMistral:
-		// TODO: Implement Mistral handler
-		return nil, fmt.Errorf("Mistral provider not yet implemented")
+		handler = NewMistralHandler(options)
 	case llm.ProviderQwen:
 		// TODO: Implement Qwen handler
 		return nil, fmt.Errorf("Qwen provider not yet implemented")
@@ -141,7 +139,7 @@ func determineProviderType(options llm.ApiHandlerOptions) (llm.ProviderType, err
 		return llm.ProviderGemini, nil
 	}
 
-	if options.OpenRouterAPIKey != "" || options.OpenRouterModelID != "" {
+	if options.OpenRouterAPIKey != "" || options.OpenRouterModelID != "" || isOpenRouterModel(options.ModelID) {
 		return llm.ProviderOpenRouter, nil
 	}
 
@@ -151,6 +149,27 @@ func determineProviderType(options llm.ApiHandlerOptions) (llm.ProviderType, err
 
 	if options.VertexProjectID != "" || isVertexModel(options.ModelID) {
 		return llm.ProviderVertex, nil
+	}
+
+	// Check for provider-specific API keys via environment variables
+	if os.Getenv("GROQ_API_KEY") != "" || (options.APIKey != "" && strings.Contains(options.ModelID, "groq")) {
+		return llm.ProviderGroq, nil
+	}
+
+	if isOllamaModel(options.ModelID) || strings.Contains(options.ModelID, "ollama") {
+		return llm.ProviderOllama, nil
+	}
+
+	if os.Getenv("XAI_API_KEY") != "" || isXAIModel(options.ModelID) {
+		return llm.ProviderXAI, nil
+	}
+
+	if os.Getenv("MISTRAL_API_KEY") != "" || isMistralModel(options.ModelID) {
+		return llm.ProviderMistral, nil
+	}
+
+	if os.Getenv("DEEPSEEK_API_KEY") != "" || isDeepSeekModel(options.ModelID) {
+		return llm.ProviderDeepSeek, nil
 	}
 
 	if options.GitHubOrg != "" || isGitHubModel(options.ModelID) {
@@ -266,6 +285,80 @@ func isGitHubModel(modelID string) bool {
 	return false
 }
 
+// isOpenRouterModel checks if a model ID is for OpenRouter
+func isOpenRouterModel(modelID string) bool {
+	// OpenRouter models use provider/model format
+	openRouterPrefixes := []string{
+		"anthropic/",
+		"openai/",
+		"google/",
+		"meta-llama/",
+		"mistralai/",
+		"cohere/",
+		"deepseek/",
+		"qwen/",
+		"01-ai/",
+		"microsoft/",
+		"nvidia/",
+		"huggingfaceh4/",
+		"nousresearch/",
+		"teknium/",
+		"cognitivecomputations/",
+	}
+
+	for _, prefix := range openRouterPrefixes {
+		if len(modelID) >= len(prefix) && modelID[:len(prefix)] == prefix {
+			return true
+		}
+	}
+
+	return false
+}
+
+// isXAIModel checks if a model ID is for xAI (Grok)
+func isXAIModel(modelID string) bool {
+	return strings.HasPrefix(modelID, "grok-")
+}
+
+// isMistralModel checks if a model ID is for Mistral
+func isMistralModel(modelID string) bool {
+	mistralPrefixes := []string{
+		"mistral-",
+		"mixtral-",
+		"codestral-",
+	}
+
+	for _, prefix := range mistralPrefixes {
+		if strings.HasPrefix(modelID, prefix) {
+			return true
+		}
+	}
+	return false
+}
+
+// isDeepSeekModel checks if a model ID is for DeepSeek
+func isDeepSeekModel(modelID string) bool {
+	return strings.HasPrefix(modelID, "deepseek-")
+}
+
+// isOllamaModel checks if a model ID is for Ollama (local models)
+func isOllamaModel(modelID string) bool {
+	// Ollama models are typically just the model name without provider prefix
+	// Common Ollama models
+	ollamaModels := []string{
+		"llama3", "llama2", "codellama", "mistral", "mixtral", "gemma",
+		"qwen", "phi", "llava", "deepseek-coder", "solar", "orca",
+		"vicuna", "wizard", "openchat", "starling", "dolphin",
+	}
+
+	for _, model := range ollamaModels {
+		if strings.Contains(modelID, model) {
+			return true
+		}
+	}
+	return false
+}
+
 // getProviderFromModelID attempts to determine provider from model ID patterns
 func getProviderFromModelID(modelID string) llm.ProviderType {
 	// DeepSeek models
@@ -322,3 +415,32 @@ func convertCanonicalToModelInfo(canonicalModel *models.CanonicalModel) llm.Mode
 
 	return modelInfo
 }
+
+// convertToOpenAIMessages converts LLM messages to OpenAI format (shared helper)
+func convertToOpenAIMessages(systemPrompt string, messages []llm.Message) ([]transform.OpenAIMessage, error) {
+	var openAIMessages []transform.OpenAIMessage
+
+	// Add system message if provided
+	if systemPrompt != "" {
+		openAIMessages = append(openAIMessages, transform.CreateSystemMessage(systemPrompt))
+	}
+
+	// Convert messages using transform layer
+	transformMessages := make([]transform.Message, len(messages))
+	for i, msg := range messages {
+		transformMessages[i] = transform.Message{
+			Role:    msg.Role,
+			Content: convertContentBlocks(msg.Content),
+		}
+	}
+
+	convertedMessages, err := transform.ConvertToOpenAIMessages(transformMessages)
+	if err != nil {
+		return nil, fmt.Errorf("failed to convert messages: %w", err)
+	}
+
+	openAIMessages = append(openAIMessages, convertedMessages...)
+	return openAIMessages, nil
+}
+
+// Note: convertContentBlocks is defined in github.go and shared across providers

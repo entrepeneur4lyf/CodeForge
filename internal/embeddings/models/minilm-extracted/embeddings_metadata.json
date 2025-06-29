@@ -1,6 +1,0 @@
-{
-  "vocab_size": 29524,
-  "embedding_dim": 256,
-  "data_type": "float32",
-  "byte_order": "little"
-}

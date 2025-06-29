@@ -48,6 +48,13 @@ type ShellConfig struct {
 	Args []string `json:"args"`
 }
 
+// EmbeddingConfig defines embedding service configuration
+type EmbeddingConfig struct {
+	Provider string `json:"provider"` // "ollama", "openai", "auto"
+	Model    string `json:"model"`    // e.g., "nomic-embed-text"
+	BaseURL  string `json:"baseURL"`  // for custom Ollama instances
+}
+
 // MCPServer defines MCP server configuration
 type MCPServer struct {
 	Command []string          `json:"command"`
@@ -85,6 +92,7 @@ type Config struct {
 	ContextPaths []string                          `json:"contextPaths,omitempty"`
 	TUI          TUIConfig                         `json:"tui"`
 	Shell        ShellConfig                       `json:"shell,omitempty"`
+	Embedding    EmbeddingConfig                   `json:"embedding,omitempty"`
 	AutoCompact  bool                              `json:"autoCompact,omitempty"`
 }
 

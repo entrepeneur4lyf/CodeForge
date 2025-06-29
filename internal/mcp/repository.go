@@ -174,7 +174,7 @@ func (rf *RepositoryFetcher) parseSection(category, content string) []MCPServerI
 				Description: strings.TrimSpace(matches[3]),
 				Category:    category,
 				Author:      rf.extractAuthorFromURL(matches[2]),
-				Language:    rf.detectLanguage(matches[2]),
+				Language:    rf.DetectLanguage(matches[2]),
 				PackageType: rf.detectPackageType(matches[2]),
 			}
 
@@ -207,23 +207,79 @@ func (rf *RepositoryFetcher) extractAuthorFromURL(url string) string {
 	return "Unknown"
 }
 
-// detectLanguage detects the programming language from GitHub URL or other indicators
-func (rf *RepositoryFetcher) detectLanguage(githubURL string) string {
-	// This is a simple heuristic - in a real implementation, you might
-	// fetch the repository info from GitHub API to get the actual language
-	if strings.Contains(githubURL, "python") || strings.Contains(githubURL, "py") {
-		return "Python"
+// DetectLanguage detects the programming language from GitHub URL and repository content
+func (rf *RepositoryFetcher) DetectLanguage(githubURL string) string {
+	// Enhanced language detection using multiple heuristics
+
+	// URL-based detection patterns
+	urlPatterns := map[string][]string{
+		"Python":     {"python", "py", "django", "flask", "fastapi", "pytorch", "tensorflow"},
+		"JavaScript": {"node", "js", "javascript", "typescript", "react", "vue", "angular", "npm"},
+		"TypeScript": {"typescript", "ts", "angular", "nest"},
+		"Go":         {"go", "golang", "gin", "echo", "fiber"},
+		"Rust":       {"rust", "rs", "cargo", "actix", "tokio", "serde"},
+		"Java":       {"java", "spring", "maven", "gradle", "android"},
+		"C++":        {"cpp", "c++", "cmake", "opencv", "boost"},
+		"C":          {"/c/", "c-", "gcc", "clang"},
+		"PHP":        {"php", "laravel", "symfony", "composer", "wordpress"},
+		"Ruby":       {"ruby", "rails", "gem", "bundler"},
+		"Swift":      {"swift", "ios", "xcode", "cocoapods"},
+		"Kotlin":     {"kotlin", "android", "ktor"},
+		"C#":         {"csharp", "dotnet", "asp.net", "unity"},
+		"Scala":      {"scala", "akka", "play"},
+		"Clojure":    {"clojure", "clj", "leiningen"},
+		"Haskell":    {"haskell", "hs", "cabal", "stack"},
+		"Erlang":     {"erlang", "elixir", "phoenix", "otp"},
+		"Lua":        {"lua", "love2d", "openresty"},
+		"R":          {"/r/", "r-", "rstudio", "cran"},
+		"Julia":      {"julia", "jl"},
+		"Dart":       {"dart", "flutter"},
+		"Shell":      {"bash", "shell", "zsh", "fish"},
 	}
-	if strings.Contains(githubURL, "node") || strings.Contains(githubURL, "js") || strings.Contains(githubURL, "typescript") {
-		return "JavaScript"
+
+	// Convert URL to lowercase for case-insensitive matching
+	lowerURL := strings.ToLower(githubURL)
+
+	// Check each language pattern
+	for language, patterns := range urlPatterns {
+		for _, pattern := range patterns {
+			if strings.Contains(lowerURL, pattern) {
+				return language
+			}
+		}
 	}
-	if strings.Contains(githubURL, "go") {
-		return "Go"
+
+	// Repository name-based detection
+	repoName := rf.extractRepoName(githubURL)
+	if repoName != "" {
+		lowerRepoName := strings.ToLower(repoName)
+
+		// Check for language-specific naming conventions
+		if strings.HasSuffix(lowerRepoName, ".py") || strings.HasSuffix(lowerRepoName, "-python") {
+			return "Python"
+		}
+		if strings.HasSuffix(lowerRepoName, ".js") || strings.HasSuffix(lowerRepoName, "-js") || strings.HasSuffix(lowerRepoName, "-node") {
+			return "JavaScript"
+		}
+		if strings.HasSuffix(lowerRepoName, ".go") || strings.HasSuffix(lowerRepoName, "-go") {
+			return "Go"
+		}
+		if strings.HasSuffix(lowerRepoName, ".rs") || strings.HasSuffix(lowerRepoName, "-rust") {
+			return "Rust"
+		}
 	}
-	if strings.Contains(githubURL, "rust") {
-		return "Rust"
-	}
+
 	return "Unknown"
+}
+
+// extractRepoName extracts the repository name from a GitHub URL
+func (rf *RepositoryFetcher) extractRepoName(githubURL string) string {
+	// Extract repo name from URLs like: https://github.com/user/repo
+	parts := strings.Split(githubURL, "/")
+	if len(parts) >= 2 {
+		return parts[len(parts)-1]
+	}
+	return ""
 }
 
 // detectPackageType detects the package type from GitHub URL or installation command

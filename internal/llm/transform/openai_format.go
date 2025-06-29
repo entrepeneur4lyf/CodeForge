@@ -313,3 +313,22 @@ func CreateSystemMessage(systemPrompt string) OpenAIMessage {
 		Content: systemPrompt,
 	}
 }
+
+// ConvertToOpenAI converts system prompt and messages to OpenAI format
+func ConvertToOpenAI(systemPrompt string, messages []Message) ([]OpenAIMessage, error) {
+	var result []OpenAIMessage
+
+	// Add system message if provided
+	if systemPrompt != "" {
+		result = append(result, CreateSystemMessage(systemPrompt))
+	}
+
+	// Convert and add user/assistant messages
+	openAIMessages, err := ConvertToOpenAIMessages(messages)
+	if err != nil {
+		return nil, err
+	}
+
+	result = append(result, openAIMessages...)
+	return result, nil
+}
