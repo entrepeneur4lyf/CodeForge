@@ -83,7 +83,7 @@ func (mcts *CodeMCTS) Search(ctx context.Context, query string, startNodeID stri
 	for iterations < mcts.maxIterations {
 		select {
 		case <-searchCtx.Done():
-			break
+			return mcts.getBestResult(), nil
 		default:
 			// 1. Selection - traverse tree using UCB1
 			leaf := mcts.selectNode(mcts.root)
@@ -351,7 +351,10 @@ func (mcts *CodeMCTS) storeExperience(node *MCTSNode, reward float64, query stri
 		Timestamp: time.Now(),
 	}
 
+	// Thread-safe experience storage
+	mcts.mutex.Lock()
 	mcts.experiences = append(mcts.experiences, experience)
+	mcts.mutex.Unlock()
 }
 
 // getBestResult returns the best search result
@@ -362,7 +365,7 @@ func (mcts *CodeMCTS) getBestResult() *SearchResult {
 			Confidence:  0.0,
 			Relevance:   0.0,
 			Explanation: "No search performed",
-			Metadata:    map[string]interface{}{},
+			Metadata:    map[string]any{},
 			Experiences: []Experience{},
 		}
 	}
@@ -376,16 +379,22 @@ func (mcts *CodeMCTS) getBestResult() *SearchResult {
 		confidence = mcts.root.Value / float64(mcts.root.Visits)
 	}
 
+	// Thread-safe experience access
+	mcts.mutex.RLock()
+	experiencesCopy := make([]Experience, len(mcts.experiences))
+	copy(experiencesCopy, mcts.experiences)
+	mcts.mutex.RUnlock()
+
 	return &SearchResult{
 		BestPath:    bestPath,
 		Confidence:  confidence,
 		Relevance:   confidence, // Simplified
 		Explanation: fmt.Sprintf("MCTS search with %d iterations", mcts.root.Visits),
-		Metadata: map[string]interface{}{
+		Metadata: map[string]any{
 			"iterations": mcts.root.Visits,
 			"algorithm":  "MCTS",
 		},
-		Experiences: mcts.experiences,
+		Experiences: experiencesCopy,
 	}
 }
 

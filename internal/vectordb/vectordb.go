@@ -847,3 +847,18 @@ func (vdb *VectorDB) Close() error {
 func GetInstance() *VectorDB {
 	return vectorDB
 }
+
+// ExecContext executes a SQL statement with context (for custom operations)
+func (vdb *VectorDB) ExecContext(ctx context.Context, query string, args ...interface{}) (sql.Result, error) {
+	return vdb.db.ExecContext(ctx, query, args...)
+}
+
+// QueryContext executes a SQL query with context (for custom operations)
+func (vdb *VectorDB) QueryContext(ctx context.Context, query string, args ...interface{}) (*sql.Rows, error) {
+	return vdb.db.QueryContext(ctx, query, args...)
+}
+
+// QueryRowContext executes a SQL query that returns a single row
+func (vdb *VectorDB) QueryRowContext(ctx context.Context, query string, args ...interface{}) *sql.Row {
+	return vdb.db.QueryRowContext(ctx, query, args...)
+}

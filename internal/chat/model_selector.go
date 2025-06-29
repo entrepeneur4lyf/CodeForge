@@ -169,55 +169,95 @@ func (ms *ModelSelector) loadOpenRouterModels(providerFilter string) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	// Get OpenRouter models
-	models, err := providers.GetTopOpenRouterModelsByRanking(ctx, "", 20)
+	// Get OpenRouter API key
+	apiKey := os.Getenv("OPENROUTER_API_KEY")
+	if apiKey == "" {
+		// Fallback to empty list if no API key
+		ms.models = []ModelInfo{}
+		return
+	}
+
+	// Get all models categorized by provider (sorted by date DESC)
+	providerModels, err := providers.GetOpenRouterModelsByProvider(ctx, apiKey)
 	if err != nil {
 		// Fallback to empty list on error
 		ms.models = []ModelInfo{}
 		return
 	}
 
+	// Filter models by provider if specified
 	ms.models = []ModelInfo{}
-	for _, model := range models {
-		// Apply provider filter
-		if providerFilter == "" || providerFilter == "others" {
-			// Show all models or "others" category
+	if providerFilter == "" || providerFilter == "others" {
+		// Show all models, organized by provider (already sorted by date DESC)
+		for providerName, models := range providerModels {
+			// Handle "others" filter
 			if providerFilter == "others" {
-				// Only show models not from major providers
-				majorProviders := []string{"anthropic", "openai", "google", "meta-llama", "mistralai", "deepseek", "x-ai", "cohere"}
-				isMajor := false
-				for _, major := range majorProviders {
-					if strings.HasPrefix(model.ID, major+"/") {
-						isMajor = true
-						break
-					}
+				majorProviders := map[string]bool{
+					"Anthropic": true, "OpenAI": true, "Google": true, "Meta": true,
+					"Mistral AI": true, "DeepSeek": true, "01.AI": true, "Cohere": true,
 				}
-				if isMajor {
-					continue
+				if majorProviders[providerName] {
+					continue // Skip major providers for "others"
 				}
 			}
-		} else {
-			// Filter by specific provider
-			if !strings.HasPrefix(model.ID, providerFilter+"/") {
-				continue
+
+			for _, model := range models {
+				modelInfo := ModelInfo{
+					Name:     fmt.Sprintf("[%s] %s", providerName, model.Name),
+					ID:       model.ID,
+					Provider: "openrouter",
+					Favorite: ms.favorites.IsModelFavorite(model.ID),
+				}
+				ms.models = append(ms.models, modelInfo)
 			}
 		}
-
-		ms.models = append(ms.models, ModelInfo{
-			Name:     model.Name,
-			ID:       model.ID,
-			Provider: "openrouter",
-			Favorite: ms.favorites.IsModelFavorite(model.ID),
-		})
+	} else {
+		// Show models for specific provider
+		providerName := getProviderNameFromFilter(providerFilter)
+		if models, exists := providerModels[providerName]; exists {
+			for _, model := range models {
+				modelInfo := ModelInfo{
+					Name:     model.Name,
+					ID:       model.ID,
+					Provider: "openrouter",
+					Favorite: ms.favorites.IsModelFavorite(model.ID),
+				}
+				ms.models = append(ms.models, modelInfo)
+			}
+		}
 	}
 
-	// Sort models: favorites first, then alphabetically
+	// Sort by favorites first, then maintain date order (newest first)
 	sort.Slice(ms.models, func(i, j int) bool {
 		if ms.models[i].Favorite != ms.models[j].Favorite {
 			return ms.models[i].Favorite
 		}
-		return ms.models[i].Name < ms.models[j].Name
+		return false // Maintain existing order (already sorted by date DESC)
 	})
+}
+
+// getProviderNameFromFilter converts filter key to provider name
+func getProviderNameFromFilter(filter string) string {
+	switch filter {
+	case "anthropic":
+		return "Anthropic"
+	case "openai":
+		return "OpenAI"
+	case "google":
+		return "Google"
+	case "meta-llama":
+		return "Meta"
+	case "mistralai":
+		return "Mistral AI"
+	case "deepseek":
+		return "DeepSeek"
+	case "x-ai":
+		return "01.AI"
+	case "cohere":
+		return "Cohere"
+	default:
+		return strings.Title(filter)
+	}
 }
 
 // isProviderAvailable checks if a provider has an API key
@@ -530,26 +570,35 @@ func (ms *ModelSelector) addOpenRouterModels() {
 		return
 	}
 
-	// Fetch top 20 models by ranking
+	// Fetch all models categorized by provider (sorted by date DESC)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	models, err := providers.GetTopOpenRouterModelsByRanking(ctx, apiKey, 20)
+	providerModels, err := providers.GetOpenRouterModelsByProvider(ctx, apiKey)
 	if err != nil {
 		// Fallback to hardcoded models on error
 		ms.addOpenRouterFallbackModels()
 		return
 	}
 
-	// Convert OpenRouter models to ModelInfo
-	for _, model := range models {
-		modelInfo := ModelInfo{
-			Name:     model.Name,
-			ID:       model.ID,
-			Provider: "openrouter",
-			Favorite: ms.favorites.IsModelFavorite(model.ID),
+	// Convert OpenRouter models to ModelInfo, showing top models from each provider
+	for providerName, models := range providerModels {
+		// Take top 3 models from each provider (already sorted by date DESC)
+		maxModels := 3
+		if len(models) < maxModels {
+			maxModels = len(models)
 		}
-		ms.models = append(ms.models, modelInfo)
+
+		for i := 0; i < maxModels; i++ {
+			model := models[i]
+			modelInfo := ModelInfo{
+				Name:     fmt.Sprintf("[%s] %s", providerName, model.Name),
+				ID:       model.ID,
+				Provider: "openrouter",
+				Favorite: ms.favorites.IsModelFavorite(model.ID),
+			}
+			ms.models = append(ms.models, modelInfo)
+		}
 	}
 }
 

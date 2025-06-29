@@ -1,6 +1,7 @@
 package ml
 
 import (
+	"strings"
 	"time"
 )
 
@@ -36,12 +37,12 @@ type CodeAction struct {
 
 // SearchResult represents the result of an ML-based search
 type SearchResult struct {
-	BestPath    []string               `json:"best_path"`   // Sequence of node IDs
-	Confidence  float64                `json:"confidence"`  // Overall confidence
-	Relevance   float64                `json:"relevance"`   // Relevance score
-	Explanation string                 `json:"explanation"` // Human-readable explanation
-	Metadata    map[string]interface{} `json:"metadata"`    // Additional metadata
-	Experiences []Experience           `json:"experiences"` // Learning experiences collected
+	BestPath    []string       `json:"best_path"`   // Sequence of node IDs
+	Confidence  float64        `json:"confidence"`  // Overall confidence
+	Relevance   float64        `json:"relevance"`   // Relevance score
+	Explanation string         `json:"explanation"` // Human-readable explanation
+	Metadata    map[string]any `json:"metadata"`    // Additional metadata
+	Experiences []Experience   `json:"experiences"` // Learning experiences collected
 }
 
 // ValueNetwork represents a simple neural network for value estimation
@@ -113,11 +114,23 @@ func (vn *ValueNetwork) Train(experiences []Experience) {
 func (vn *ValueNetwork) extractFeatures(state CodeState, query string) map[string]float64 {
 	features := make(map[string]float64)
 
-	// Query matching features (simplified)
-	features["name_match"] = 0.0 // Would need access to graph node
-	features["path_match"] = 0.0
-	features["purpose_match"] = 0.0
-	features["doc_match"] = 0.0
+	// Query matching features using actual query
+	queryLower := strings.ToLower(query)
+	features["name_match"] = calculateStringMatch(strings.ToLower(state.CurrentNode), queryLower)
+	features["query_match"] = calculateStringMatch(strings.ToLower(state.Query), queryLower)
+
+	// Calculate match with query terms
+	termMatch := 0.0
+	for _, term := range state.QueryTerms {
+		if strings.Contains(queryLower, strings.ToLower(term)) {
+			termMatch += 1.0
+		}
+	}
+	if len(state.QueryTerms) > 0 {
+		features["term_match"] = termMatch / float64(len(state.QueryTerms))
+	} else {
+		features["term_match"] = 0.0
+	}
 
 	// State-based features
 	features["depth_penalty"] = float64(state.PathDepth)
@@ -247,4 +260,43 @@ func DefaultTDConfig() *TDConfig {
 		MaxTraces:      1000, // Reasonable memory limit
 		UpdateFreq:     10,   // Batch updates every 10 steps
 	}
+}
+
+// calculateStringMatch calculates similarity between two strings
+func calculateStringMatch(s1, s2 string) float64 {
+	if s1 == s2 {
+		return 1.0
+	}
+	if s1 == "" || s2 == "" {
+		return 0.0
+	}
+
+	// Simple substring matching
+	if strings.Contains(s1, s2) || strings.Contains(s2, s1) {
+		return 0.8
+	}
+
+	// Check for common words
+	words1 := strings.Fields(s1)
+	words2 := strings.Fields(s2)
+	commonWords := 0
+
+	for _, w1 := range words1 {
+		for _, w2 := range words2 {
+			if w1 == w2 {
+				commonWords++
+				break
+			}
+		}
+	}
+
+	if len(words1) > 0 && len(words2) > 0 {
+		maxLen := len(words1)
+		if len(words2) > maxLen {
+			maxLen = len(words2)
+		}
+		return float64(commonWords) / float64(maxLen)
+	}
+
+	return 0.0
 }

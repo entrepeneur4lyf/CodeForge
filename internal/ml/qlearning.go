@@ -419,6 +419,31 @@ func (ql *CodeQLearning) selectTargetForAction(currentNodeID, actionType string)
 		return currentNodeID
 	}
 
+	// Filter neighbors based on action type
+	switch actionType {
+	case "explore_function":
+		// Prefer function nodes
+		for _, neighbor := range neighbors {
+			if neighbor.Type == "function" {
+				return neighbor.ID
+			}
+		}
+	case "explore_class":
+		// Prefer class/struct nodes
+		for _, neighbor := range neighbors {
+			if neighbor.Type == "class" || neighbor.Type == "struct" {
+				return neighbor.ID
+			}
+		}
+	case "follow_import":
+		// Prefer import/dependency nodes
+		for _, neighbor := range neighbors {
+			if neighbor.Type == "import" || neighbor.Type == "dependency" {
+				return neighbor.ID
+			}
+		}
+	}
+
 	// Simple heuristic - can be enhanced
 	return neighbors[0].ID
 }
@@ -449,7 +474,7 @@ func NewStateEncoder() *StateEncoder {
 // Encode converts a CodeState into a consistent hash string
 func (se *StateEncoder) Encode(state CodeState) string {
 	// Create a normalized representation of the state
-	features := make(map[string]interface{})
+	features := make(map[string]any)
 
 	// Current node (most important)
 	features["current_node"] = state.CurrentNode
@@ -619,7 +644,10 @@ func NewCodeQLearningWithVectorDB(vdb *vectordb.VectorDB, codeGraph *graph.CodeG
 func createMLTables(vdb *vectordb.VectorDB) error {
 	// For now, we'll use in-memory storage since we don't want to modify the vectordb structure
 	// In a future version, we could add ML-specific tables to the vectordb schema
-	log.Println("🧠 ML: Using in-memory storage for Q-learning tables")
+	log.Printf("🧠 ML: Using in-memory storage for Q-learning tables (VectorDB available: %t)", vdb != nil)
+
+	// Future enhancement: could use vdb.GetDB() to create ML tables
+	// For now, gracefully fallback to in-memory storage
 	return nil
 }
 

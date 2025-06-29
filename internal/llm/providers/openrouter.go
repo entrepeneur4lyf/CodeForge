@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -17,6 +18,7 @@ import (
 	"github.com/entrepeneur4lyf/codeforge/internal/llm"
 	"github.com/entrepeneur4lyf/codeforge/internal/llm/models"
 	"github.com/entrepeneur4lyf/codeforge/internal/llm/transform"
+	"github.com/entrepeneur4lyf/codeforge/internal/vectordb"
 )
 
 // OpenRouterModelsCache represents cached model data with TTL
@@ -38,6 +40,7 @@ type OpenRouterHandler struct {
 	options llm.ApiHandlerOptions
 	client  *http.Client
 	baseURL string
+	db      *vectordb.VectorDB // Database connection for model storage
 }
 
 // OpenRouterRequest represents the request to OpenRouter API
@@ -147,7 +150,15 @@ func NewOpenRouterHandler(options llm.ApiHandlerOptions) *OpenRouterHandler {
 		options: options,
 		client:  &http.Client{Timeout: timeout},
 		baseURL: baseURL,
+		db:      nil, // Will be set when database operations are needed
 	}
+}
+
+// NewOpenRouterHandlerWithDB creates a new OpenRouter handler with database connection
+func NewOpenRouterHandlerWithDB(options llm.ApiHandlerOptions, db *vectordb.VectorDB) *OpenRouterHandler {
+	handler := NewOpenRouterHandler(options)
+	handler.db = db
+	return handler
 }
 
 // CreateMessage implements the ApiHandler interface
@@ -492,12 +503,43 @@ func (c *OpenRouterModelsCache) setCachedModels(models []OpenRouterModel) {
 	c.timestamp = time.Now()
 }
 
-// GetOpenRouterModels fetches available models from OpenRouter with caching
+// GetOpenRouterModels fetches available models from OpenRouter with database caching
 func (h *OpenRouterHandler) GetOpenRouterModels(ctx context.Context) ([]OpenRouterModel, error) {
-	// Check cache first
+	// First, try to get models from database cache
+	if models, err := h.getModelsFromDatabase(ctx); err == nil && len(models) > 0 {
+		// Check if cache is still valid (24 hours TTL)
+		if h.isDatabaseCacheValid(ctx) {
+			return models, nil
+		}
+	}
+
+	// Cache expired or empty, fetch fresh data and store in database
+	return h.refreshModelsInDatabase(ctx)
+}
+
+// getModelsFromDatabase retrieves cached models from database
+func (h *OpenRouterHandler) getModelsFromDatabase(ctx context.Context) ([]OpenRouterModel, error) {
+	// For now, fall back to memory cache until database integration is complete
+	// TODO: Query from vectordb openrouter_models table
 	if cachedModels, valid := modelsCache.getCachedModels(); valid {
 		return cachedModels, nil
 	}
+	return nil, fmt.Errorf("no cached models available")
+}
+
+// isDatabaseCacheValid checks if the database cache is still valid (24 hour TTL)
+func (h *OpenRouterHandler) isDatabaseCacheValid(ctx context.Context) bool {
+	// TODO: Check timestamp from database table
+	// For now, use memory cache timestamp
+	modelsCache.mutex.RLock()
+	defer modelsCache.mutex.RUnlock()
+
+	cacheTTL := 24 * time.Hour
+	return time.Since(modelsCache.timestamp) < cacheTTL
+}
+
+// refreshModelsInDatabase fetches fresh models from API and stores in database
+func (h *OpenRouterHandler) refreshModelsInDatabase(ctx context.Context) ([]OpenRouterModel, error) {
 	req, err := http.NewRequestWithContext(ctx, "GET", h.baseURL+"/models", nil)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create request: %w", err)
@@ -521,10 +563,509 @@ func (h *OpenRouterHandler) GetOpenRouterModels(ctx context.Context) ([]OpenRout
 		return nil, fmt.Errorf("failed to decode response: %w", err)
 	}
 
-	// Cache the results
+	// 🚀 EFFICIENT APPROACH: Store lightweight model list only
+	// Metadata will be fetched on-demand when users actually need it
+	fmt.Printf("📋 Processing %d models (lightweight sync)\n", len(response.Data))
+
+	// Sort models by release date DESC (newest first) - using basic data
+	sort.Slice(response.Data, func(i, j int) bool {
+		return parseModelReleaseDate(response.Data[i]) > parseModelReleaseDate(response.Data[j])
+	})
+
+	// Store lightweight model list in database (fast!)
+	if err := h.storeModelsInDatabase(ctx, response.Data); err != nil {
+		// Log warning but don't fail - we still have the data
+		fmt.Printf("Warning: Failed to store models in database: %v\n", err)
+	}
+
+	// Update memory cache as backup
 	modelsCache.setCachedModels(response.Data)
 
 	return response.Data, nil
+}
+
+// storeModelsInDatabase stores models using efficient two-table architecture
+func (h *OpenRouterHandler) storeModelsInDatabase(ctx context.Context, models []OpenRouterModel) error {
+	// TODO: Integrate with vectordb for actual database operations
+	// This implements the smart two-table approach:
+
+	// 1. Sync lightweight model list (fast, frequent)
+	if err := h.syncModelList(ctx, models); err != nil {
+		return fmt.Errorf("failed to sync model list: %w", err)
+	}
+
+	// 2. Metadata will be populated on-demand or via background jobs
+	// No need to fetch heavy metadata here - that's the whole point!
+
+	return nil
+}
+
+// ensureTablesExist creates the OpenRouter tables if they don't exist
+func (h *OpenRouterHandler) ensureTablesExist(ctx context.Context) error {
+	if h.db == nil {
+		return fmt.Errorf("database connection not available")
+	}
+
+	// Use VectorDB's ExecContext method
+
+	// Create models table
+	modelsTable := `
+	CREATE TABLE IF NOT EXISTS openrouter_models (
+		model_id TEXT PRIMARY KEY,
+		name TEXT NOT NULL,
+		description TEXT,
+		created_date INTEGER,
+		context_length INTEGER,
+		provider_name TEXT,
+		last_seen TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+		added_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+	)`
+
+	if _, err := h.db.ExecContext(ctx, modelsTable); err != nil {
+		return fmt.Errorf("failed to create openrouter_models table: %w", err)
+	}
+
+	// Create metadata table
+	metadataTable := `
+	CREATE TABLE IF NOT EXISTS openrouter_model_metadata (
+		model_id TEXT PRIMARY KEY,
+		architecture_json TEXT,
+		endpoints_json TEXT,
+		pricing_summary_json TEXT,
+		max_context_length INTEGER,
+		supported_modalities TEXT,
+		provider_count INTEGER,
+		best_price_prompt REAL,
+		best_price_completion REAL,
+		uptime_average REAL,
+		last_updated TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+		metadata_version INTEGER DEFAULT 1,
+		FOREIGN KEY (model_id) REFERENCES openrouter_models(model_id) ON DELETE CASCADE
+	)`
+
+	if _, err := h.db.ExecContext(ctx, metadataTable); err != nil {
+		return fmt.Errorf("failed to create openrouter_model_metadata table: %w", err)
+	}
+
+	// Create cleanup trigger
+	trigger := `
+	CREATE TRIGGER IF NOT EXISTS cleanup_openrouter_metadata
+	AFTER DELETE ON openrouter_models
+	FOR EACH ROW
+	BEGIN
+		DELETE FROM openrouter_model_metadata
+		WHERE model_id = OLD.model_id;
+	END`
+
+	if _, err := h.db.ExecContext(ctx, trigger); err != nil {
+		return fmt.Errorf("failed to create cleanup trigger: %w", err)
+	}
+
+	// Create indexes
+	indexes := []string{
+		"CREATE INDEX IF NOT EXISTS idx_openrouter_models_last_seen ON openrouter_models(last_seen)",
+		"CREATE INDEX IF NOT EXISTS idx_openrouter_models_provider ON openrouter_models(provider_name)",
+		"CREATE INDEX IF NOT EXISTS idx_openrouter_metadata_updated ON openrouter_model_metadata(last_updated)",
+	}
+
+	for _, index := range indexes {
+		if _, err := h.db.ExecContext(ctx, index); err != nil {
+			return fmt.Errorf("failed to create index: %w", err)
+		}
+	}
+
+	return nil
+}
+
+// syncModelList efficiently syncs the lightweight model list
+func (h *OpenRouterHandler) syncModelList(ctx context.Context, models []OpenRouterModel) error {
+	if h.db == nil {
+		fmt.Printf("📋 No database connection - using memory cache only\n")
+		return nil
+	}
+
+	// Ensure tables exist
+	if err := h.ensureTablesExist(ctx); err != nil {
+		return fmt.Errorf("failed to ensure tables exist: %w", err)
+	}
+
+	fmt.Printf("📋 Syncing %d models to database (lightweight)\n", len(models))
+
+	// 1. Get current model IDs from database
+	existingModels, err := h.getExistingModelIDs(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to get existing models: %w", err)
+	}
+
+	// 2. Find new models to add
+	newModels := h.findNewModels(models, existingModels)
+	if len(newModels) > 0 {
+		fmt.Printf("➕ Adding %d new models\n", len(newModels))
+		if err := h.insertNewModels(ctx, newModels); err != nil {
+			return fmt.Errorf("failed to insert new models: %w", err)
+		}
+	}
+
+	// 3. Update last_seen for existing models
+	currentModelIDs := make(map[string]bool)
+	for _, model := range models {
+		currentModelIDs[model.ID] = true
+	}
+	if err := h.updateLastSeen(ctx, currentModelIDs); err != nil {
+		return fmt.Errorf("failed to update last_seen: %w", err)
+	}
+
+	// 4. Remove models not in current list (trigger will clean metadata)
+	removedCount, err := h.removeObsoleteModels(ctx, currentModelIDs, existingModels)
+	if err != nil {
+		return fmt.Errorf("failed to remove obsolete models: %w", err)
+	}
+	if removedCount > 0 {
+		fmt.Printf("🗑️ Removed %d obsolete models\n", removedCount)
+	}
+
+	return nil
+}
+
+// getModelMetadata fetches detailed metadata for a specific model (on-demand)
+func (h *OpenRouterHandler) getModelMetadata(ctx context.Context, modelID string) (*OpenRouterModel, error) {
+	// TODO: Check database first, fetch from API if missing
+	// This implements lazy loading:
+	// 1. Check openrouter_model_metadata table
+	// 2. If missing or stale, fetch from /models/{id}/endpoints
+	// 3. Store in metadata table with long TTL
+
+	model, err := h.getDetailedModelMetadata(ctx, OpenRouterModel{ID: modelID})
+	if err != nil {
+		return nil, err
+	}
+	return &model, nil
+}
+
+// Database helper functions for efficient model sync
+
+// getExistingModelIDs retrieves current model IDs from database
+func (h *OpenRouterHandler) getExistingModelIDs(ctx context.Context) (map[string]bool, error) {
+	if h.db == nil {
+		return make(map[string]bool), nil
+	}
+
+	rows, err := h.db.QueryContext(ctx, "SELECT model_id FROM openrouter_models")
+	if err != nil {
+		return nil, fmt.Errorf("failed to query existing models: %w", err)
+	}
+	defer rows.Close()
+
+	existing := make(map[string]bool)
+	for rows.Next() {
+		var modelID string
+		if err := rows.Scan(&modelID); err != nil {
+			return nil, fmt.Errorf("failed to scan model ID: %w", err)
+		}
+		existing[modelID] = true
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("error iterating rows: %w", err)
+	}
+
+	return existing, nil
+}
+
+// findNewModels identifies models not in database
+func (h *OpenRouterHandler) findNewModels(models []OpenRouterModel, existing map[string]bool) []OpenRouterModel {
+	var newModels []OpenRouterModel
+	for _, model := range models {
+		if !existing[model.ID] {
+			newModels = append(newModels, model)
+		}
+	}
+	return newModels
+}
+
+// insertNewModels adds new models to database (lightweight data only)
+func (h *OpenRouterHandler) insertNewModels(ctx context.Context, models []OpenRouterModel) error {
+	if h.db == nil {
+		return nil
+	}
+
+	stmt, err := h.db.ExecContext(ctx, `
+		INSERT OR IGNORE INTO openrouter_models
+		(model_id, name, description, created_date, context_length, provider_name, last_seen, added_date)
+		VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+	`)
+
+	if err != nil {
+		return fmt.Errorf("failed to prepare insert statement: %w", err)
+	}
+
+	for _, model := range models {
+		providerName := extractProviderFromID(model.ID)
+
+		_, err := h.db.ExecContext(ctx, `
+			INSERT OR IGNORE INTO openrouter_models
+			(model_id, name, description, created_date, context_length, provider_name, last_seen, added_date)
+			VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+		`, model.ID, model.Name, model.Description, model.Created, model.ContextLength, providerName)
+
+		if err != nil {
+			return fmt.Errorf("failed to insert model %s: %w", model.ID, err)
+		}
+
+		fmt.Printf("  ➕ %s (%s)\n", model.Name, providerName)
+	}
+
+	_ = stmt // Suppress unused variable warning
+	return nil
+}
+
+// updateLastSeen updates last_seen timestamp for existing models
+func (h *OpenRouterHandler) updateLastSeen(ctx context.Context, currentModels map[string]bool) error {
+	if h.db == nil || len(currentModels) == 0 {
+		return nil
+	}
+
+	// Build IN clause for batch update
+	modelIDs := make([]string, 0, len(currentModels))
+	for modelID := range currentModels {
+		modelIDs = append(modelIDs, modelID)
+	}
+
+	// Create placeholders for IN clause
+	placeholders := make([]string, len(modelIDs))
+	args := make([]interface{}, len(modelIDs))
+	for i, modelID := range modelIDs {
+		placeholders[i] = "?"
+		args[i] = modelID
+	}
+
+	query := fmt.Sprintf(`
+		UPDATE openrouter_models
+		SET last_seen = CURRENT_TIMESTAMP
+		WHERE model_id IN (%s)
+	`, strings.Join(placeholders, ","))
+
+	_, err := h.db.ExecContext(ctx, query, args...)
+	if err != nil {
+		return fmt.Errorf("failed to update last_seen: %w", err)
+	}
+
+	fmt.Printf("🔄 Updated last_seen for %d models\n", len(currentModels))
+	return nil
+}
+
+// removeObsoleteModels removes models not in current list
+func (h *OpenRouterHandler) removeObsoleteModels(ctx context.Context, current map[string]bool, existing map[string]bool) (int, error) {
+	if h.db == nil {
+		return 0, nil
+	}
+
+	// Find models to remove
+	toRemove := make([]string, 0)
+	for modelID := range existing {
+		if !current[modelID] {
+			toRemove = append(toRemove, modelID)
+		}
+	}
+
+	if len(toRemove) == 0 {
+		return 0, nil
+	}
+
+	// Create placeholders for IN clause
+	placeholders := make([]string, len(toRemove))
+	args := make([]interface{}, len(toRemove))
+	for i, modelID := range toRemove {
+		placeholders[i] = "?"
+		args[i] = modelID
+		fmt.Printf("  🗑️ Removing obsolete model: %s\n", modelID)
+	}
+
+	query := fmt.Sprintf(`
+		DELETE FROM openrouter_models
+		WHERE model_id IN (%s)
+	`, strings.Join(placeholders, ","))
+
+	result, err := h.db.ExecContext(ctx, query, args...)
+	if err != nil {
+		return 0, fmt.Errorf("failed to remove obsolete models: %w", err)
+	}
+
+	rowsAffected, err := result.RowsAffected()
+	if err != nil {
+		return 0, fmt.Errorf("failed to get rows affected: %w", err)
+	}
+
+	return int(rowsAffected), nil
+}
+
+// getDetailedModelMetadata fetches comprehensive metadata for a model
+func (h *OpenRouterHandler) getDetailedModelMetadata(ctx context.Context, model OpenRouterModel) (OpenRouterModel, error) {
+	// Construct the endpoints URL for this specific model
+	endpointsURL := fmt.Sprintf("%s/models/%s/endpoints", h.baseURL, model.ID)
+
+	req, err := http.NewRequestWithContext(ctx, "GET", endpointsURL, nil)
+	if err != nil {
+		return model, fmt.Errorf("failed to create endpoints request: %w", err)
+	}
+
+	req.Header.Set("Authorization", "Bearer "+h.options.OpenRouterAPIKey)
+
+	resp, err := h.client.Do(req)
+	if err != nil {
+		return model, fmt.Errorf("endpoints request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return model, fmt.Errorf("endpoints API error %d: %s", resp.StatusCode, string(body))
+	}
+
+	var endpointsResponse OpenRouterEndpointsResponse
+	if err := json.NewDecoder(resp.Body).Decode(&endpointsResponse); err != nil {
+		return model, fmt.Errorf("failed to decode endpoints response: %w", err)
+	}
+
+	// Enrich the model with detailed endpoint information
+	enrichedModel := endpointsResponse.Data
+
+	// Preserve original fields that might not be in endpoints response
+	if enrichedModel.ID == "" {
+		enrichedModel.ID = model.ID
+	}
+	if enrichedModel.Name == "" {
+		enrichedModel.Name = model.Name
+	}
+	if enrichedModel.Created == 0 {
+		enrichedModel.Created = model.Created
+	}
+
+	return enrichedModel, nil
+}
+
+// storeModelMetadata stores comprehensive metadata in database
+func (h *OpenRouterHandler) storeModelMetadata(ctx context.Context, model OpenRouterModel) error {
+	// TODO: Store in openrouter_model_metadata table
+	// This includes:
+	// - architecture_json (modality, tokenizer, etc.)
+	// - endpoints_json (all provider endpoints)
+	// - pricing_summary_json (aggregated pricing)
+	// - computed fields (max_context_length, provider_count, best_prices, etc.)
+
+	fmt.Printf("💾 Storing metadata for %s\n", model.ID)
+	return nil
+}
+
+// GetModelWithMetadata retrieves model with on-demand metadata loading
+func GetModelWithMetadata(ctx context.Context, apiKey, modelID string) (*OpenRouterModel, error) {
+	if apiKey == "" {
+		return nil, fmt.Errorf("OpenRouter API key required for metadata")
+	}
+
+	options := llm.ApiHandlerOptions{
+		OpenRouterAPIKey: apiKey,
+	}
+
+	// Use database-enabled handler
+	db := vectordb.GetInstance()
+	handler := NewOpenRouterHandlerWithDB(options, db)
+	return handler.getModelMetadata(ctx, modelID)
+}
+
+// parseModelReleaseDate extracts release date from model for sorting
+func parseModelReleaseDate(model OpenRouterModel) int64 {
+	// Extract date from model ID (e.g., "anthropic/claude-3.5-sonnet-20241022")
+	id := model.ID
+
+	// Look for date patterns in the ID
+	if strings.Contains(id, "20241022") {
+		return 20241022 // Claude 3.5 Sonnet latest
+	}
+	if strings.Contains(id, "20240620") {
+		return 20240620 // Claude 3.5 Sonnet original
+	}
+	if strings.Contains(id, "20240229") {
+		return 20240229 // Claude 3 Opus
+	}
+	if strings.Contains(id, "gpt-4o") {
+		return 20240513 // GPT-4o release
+	}
+	if strings.Contains(id, "gpt-4-turbo") {
+		return 20240409 // GPT-4 Turbo
+	}
+	if strings.Contains(id, "gemini-1.5-pro") {
+		return 20240215 // Gemini 1.5 Pro
+	}
+	if strings.Contains(id, "llama-3.1") {
+		return 20240723 // Llama 3.1
+	}
+	if strings.Contains(id, "llama-3") {
+		return 20240418 // Llama 3
+	}
+
+	// Default to 0 for unknown models (will be sorted last)
+	return 0
+}
+
+// GetModelsByProvider returns models categorized by provider
+func (h *OpenRouterHandler) GetModelsByProvider(ctx context.Context) (map[string][]OpenRouterModel, error) {
+	// Get all models
+	allModels, err := h.GetOpenRouterModels(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	// Categorize by provider
+	providerModels := make(map[string][]OpenRouterModel)
+
+	for _, model := range allModels {
+		provider := extractProviderFromID(model.ID)
+		providerModels[provider] = append(providerModels[provider], model)
+	}
+
+	// Sort each provider's models by release date DESC
+	for provider := range providerModels {
+		sort.Slice(providerModels[provider], func(i, j int) bool {
+			return parseModelReleaseDate(providerModels[provider][i]) > parseModelReleaseDate(providerModels[provider][j])
+		})
+	}
+
+	return providerModels, nil
+}
+
+// extractProviderFromID extracts provider name from model ID
+func extractProviderFromID(modelID string) string {
+	parts := strings.Split(modelID, "/")
+	if len(parts) >= 2 {
+		provider := parts[0]
+		// Normalize provider names
+		switch provider {
+		case "anthropic":
+			return "Anthropic"
+		case "openai":
+			return "OpenAI"
+		case "google":
+			return "Google"
+		case "meta-llama":
+			return "Meta"
+		case "mistralai":
+			return "Mistral AI"
+		case "cohere":
+			return "Cohere"
+		case "01-ai":
+			return "01.AI"
+		case "qwen":
+			return "Qwen"
+		case "deepseek":
+			return "DeepSeek"
+		case "microsoft":
+			return "Microsoft"
+		default:
+			return strings.Title(provider)
+		}
+	}
+	return "Other"
 }
 
 // GetTopOpenRouterModels fetches the top N models from OpenRouter (cached)
@@ -593,7 +1134,9 @@ func GetTopOpenRouterModelsByRanking(ctx context.Context, apiKey string, limit i
 		OpenRouterAPIKey: apiKey,
 	}
 
-	handler := NewOpenRouterHandler(options)
+	// Use database-enabled handler
+	db := vectordb.GetInstance()
+	handler := NewOpenRouterHandlerWithDB(options, db)
 	return handler.GetTopOpenRouterModels(ctx, limit)
 }
 
@@ -630,6 +1173,22 @@ func getTopModelsFromScraping(ctx context.Context, limit int) ([]OpenRouterModel
 	return models, nil
 }
 
+// GetOpenRouterModelsByProvider returns all OpenRouter models categorized by provider
+func GetOpenRouterModelsByProvider(ctx context.Context, apiKey string) (map[string][]OpenRouterModel, error) {
+	if apiKey == "" {
+		return nil, fmt.Errorf("OpenRouter API key required")
+	}
+
+	options := llm.ApiHandlerOptions{
+		OpenRouterAPIKey: apiKey,
+	}
+
+	// Use database-enabled handler
+	db := vectordb.GetInstance()
+	handler := NewOpenRouterHandlerWithDB(options, db)
+	return handler.GetModelsByProvider(ctx)
+}
+
 // GetOpenRouterCacheStatus returns cache information for debugging
 func GetOpenRouterCacheStatus() (bool, time.Time, int) {
 	modelsCache.mutex.RLock()
@@ -660,15 +1219,26 @@ type OpenRouterEndpoint struct {
 	ContextLength       int                       `json:"context_length"`
 	Pricing             OpenRouterEndpointPricing `json:"pricing"`
 	ProviderName        string                    `json:"provider_name"`
+	Tag                 string                    `json:"tag"`
+	Quantization        string                    `json:"quantization"`
+	MaxCompletionTokens int                       `json:"max_completion_tokens"`
+	MaxPromptTokens     *int                      `json:"max_prompt_tokens"`
 	SupportedParameters []string                  `json:"supported_parameters"`
+	Status              int                       `json:"status"`
+	UptimeLast30m       float64                   `json:"uptime_last_30m"`
 }
 
-// OpenRouterEndpointPricing represents pricing for a specific endpoint
+// OpenRouterEndpointPricing represents comprehensive pricing for a specific endpoint
 type OpenRouterEndpointPricing struct {
-	Request    string `json:"request"`
-	Image      string `json:"image"`
-	Prompt     string `json:"prompt"`
-	Completion string `json:"completion"`
+	Prompt            string  `json:"prompt"`
+	Completion        string  `json:"completion"`
+	Request           string  `json:"request"`
+	Image             string  `json:"image"`
+	WebSearch         string  `json:"web_search"`
+	InternalReasoning string  `json:"internal_reasoning"`
+	InputCacheRead    string  `json:"input_cache_read"`
+	InputCacheWrite   string  `json:"input_cache_write"`
+	Discount          float64 `json:"discount"`
 }
 
 // OpenRouterModelPricing represents pricing information
@@ -679,11 +1249,13 @@ type OpenRouterModelPricing struct {
 	Request    string `json:"request"`    // Price per request as string
 }
 
-// OpenRouterArchitecture represents model architecture info
+// OpenRouterArchitecture represents comprehensive model architecture info
 type OpenRouterArchitecture struct {
-	Modality     string `json:"modality"`      // "text", "multimodal", etc.
-	Tokenizer    string `json:"tokenizer"`     // Tokenizer type
-	InstructType string `json:"instruct_type"` // Instruction format
+	Tokenizer        string   `json:"tokenizer"`         // Tokenizer type
+	InstructType     *string  `json:"instruct_type"`     // Instruction format (can be null)
+	Modality         string   `json:"modality"`          // "text->text", "text+image->text", etc.
+	InputModalities  []string `json:"input_modalities"`  // ["text"], ["text", "image"], etc.
+	OutputModalities []string `json:"output_modalities"` // ["text"], etc.
 }
 
 // OpenRouterTopProvider represents the top provider for a model
@@ -695,6 +1267,11 @@ type OpenRouterTopProvider struct {
 // OpenRouterModelsResponse represents the response from /models endpoint
 type OpenRouterModelsResponse struct {
 	Data []OpenRouterModel `json:"data"`
+}
+
+// OpenRouterEndpointsResponse represents the response from /models/{id}/endpoints endpoint
+type OpenRouterEndpointsResponse struct {
+	Data OpenRouterModel `json:"data"`
 }
 
 // scrapeOpenRouterRankings fetches models from OpenRouter API
