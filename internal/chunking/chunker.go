@@ -89,9 +89,25 @@ func (c *CodeChunker) chunkWithTreeSitter(ctx context.Context, filePath, content
 
 // chunkByFunction chunks code by function boundaries
 func (c *CodeChunker) chunkByFunction(ctx context.Context, filePath, content, language string) ([]*vectordb.CodeChunk, error) {
-	// This would use regex or simple parsing to find function boundaries
-	// For now, fallback to text chunking
-	return c.chunkByText(ctx, filePath, content, language)
+	lines := strings.Split(content, "\n")
+
+	switch strings.ToLower(language) {
+	case "go":
+		return c.chunkGoFunctions(filePath, content, lines)
+	case "rust":
+		return c.chunkRustFunctions(filePath, content, lines)
+	case "python":
+		return c.chunkPythonFunctions(filePath, content, lines)
+	case "javascript", "typescript":
+		return c.chunkJSFunctions(filePath, content, lines)
+	case "java":
+		return c.chunkJavaFunctions(filePath, content, lines)
+	case "c", "cpp", "c++":
+		return c.chunkCFunctions(filePath, content, lines)
+	default:
+		// Fallback to text chunking for unsupported languages
+		return c.chunkByText(ctx, filePath, content, language)
+	}
 }
 
 // chunkByClass chunks code by class boundaries
@@ -214,4 +230,222 @@ func (c *CodeChunker) chunkByText(ctx context.Context, filePath, content, langua
 	}
 
 	return chunks, nil
+}
+
+// Language-specific function chunkers
+
+// chunkGoFunctions chunks Go code by function boundaries
+func (c *CodeChunker) chunkGoFunctions(filePath, content string, lines []string) ([]*vectordb.CodeChunk, error) {
+	chunks := []*vectordb.CodeChunk{}
+	var currentFunc strings.Builder
+	var funcName string
+	var startLine int
+	inFunction := false
+	braceCount := 0
+
+	for i, line := range lines {
+		trimmed := strings.TrimSpace(line)
+
+		// Detect function start
+		if strings.HasPrefix(trimmed, "func ") {
+			// Save previous function if exists
+			if inFunction && currentFunc.Len() > 0 {
+				chunks = append(chunks, c.createFunctionChunk(filePath, funcName, currentFunc.String(), startLine, i-1))
+			}
+
+			// Start new function
+			funcName = c.extractGoFunctionName(trimmed)
+			currentFunc.Reset()
+			currentFunc.WriteString(line + "\n")
+			startLine = i + 1
+			inFunction = true
+			braceCount = strings.Count(line, "{") - strings.Count(line, "}")
+		} else if inFunction {
+			currentFunc.WriteString(line + "\n")
+			braceCount += strings.Count(line, "{") - strings.Count(line, "}")
+
+			// Function ends when braces are balanced
+			if braceCount <= 0 {
+				chunks = append(chunks, c.createFunctionChunk(filePath, funcName, currentFunc.String(), startLine, i+1))
+				inFunction = false
+				currentFunc.Reset()
+			}
+		}
+	}
+
+	// Handle final function
+	if inFunction && currentFunc.Len() > 0 {
+		chunks = append(chunks, c.createFunctionChunk(filePath, funcName, currentFunc.String(), startLine, len(lines)))
+	}
+
+	return chunks, nil
+}
+
+// chunkPythonFunctions chunks Python code by function boundaries
+func (c *CodeChunker) chunkPythonFunctions(filePath, content string, lines []string) ([]*vectordb.CodeChunk, error) {
+	chunks := []*vectordb.CodeChunk{}
+	var currentFunc strings.Builder
+	var funcName string
+	var startLine int
+	inFunction := false
+	baseIndent := 0
+
+	for i, line := range lines {
+		trimmed := strings.TrimSpace(line)
+
+		// Detect function start
+		if strings.HasPrefix(trimmed, "def ") {
+			// Save previous function if exists
+			if inFunction && currentFunc.Len() > 0 {
+				chunks = append(chunks, c.createFunctionChunk(filePath, funcName, currentFunc.String(), startLine, i-1))
+			}
+
+			// Start new function
+			funcName = c.extractPythonFunctionName(trimmed)
+			currentFunc.Reset()
+			currentFunc.WriteString(line + "\n")
+			startLine = i + 1
+			inFunction = true
+			baseIndent = len(line) - len(strings.TrimLeft(line, " \t"))
+		} else if inFunction {
+			currentIndent := len(line) - len(strings.TrimLeft(line, " \t"))
+
+			// Function ends when we reach same or lower indentation level (and line is not empty)
+			if trimmed != "" && currentIndent <= baseIndent {
+				chunks = append(chunks, c.createFunctionChunk(filePath, funcName, currentFunc.String(), startLine, i))
+				inFunction = false
+				currentFunc.Reset()
+
+				// Check if this line starts a new function
+				if strings.HasPrefix(trimmed, "def ") {
+					funcName = c.extractPythonFunctionName(trimmed)
+					currentFunc.WriteString(line + "\n")
+					startLine = i + 1
+					inFunction = true
+					baseIndent = currentIndent
+				}
+			} else {
+				currentFunc.WriteString(line + "\n")
+			}
+		}
+	}
+
+	// Handle final function
+	if inFunction && currentFunc.Len() > 0 {
+		chunks = append(chunks, c.createFunctionChunk(filePath, funcName, currentFunc.String(), startLine, len(lines)))
+	}
+
+	return chunks, nil
+}
+
+// Placeholder implementations for other languages
+func (c *CodeChunker) chunkRustFunctions(filePath, content string, lines []string) ([]*vectordb.CodeChunk, error) {
+	// TODO: Implement Rust function chunking
+	return c.chunkByText(context.Background(), filePath, content, "rust")
+}
+
+func (c *CodeChunker) chunkJSFunctions(filePath, content string, lines []string) ([]*vectordb.CodeChunk, error) {
+	// TODO: Implement JavaScript/TypeScript function chunking
+	return c.chunkByText(context.Background(), filePath, content, "javascript")
+}
+
+func (c *CodeChunker) chunkJavaFunctions(filePath, content string, lines []string) ([]*vectordb.CodeChunk, error) {
+	// TODO: Implement Java function chunking
+	return c.chunkByText(context.Background(), filePath, content, "java")
+}
+
+func (c *CodeChunker) chunkCFunctions(filePath, content string, lines []string) ([]*vectordb.CodeChunk, error) {
+	// TODO: Implement C/C++ function chunking
+	return c.chunkByText(context.Background(), filePath, content, "c")
+}
+
+// Helper methods
+
+// createFunctionChunk creates a function chunk
+func (c *CodeChunker) createFunctionChunk(filePath, funcName, content string, startLine, endLine int) *vectordb.CodeChunk {
+	return &vectordb.CodeChunk{
+		ID:       fmt.Sprintf("%s_func_%s", filepath.Base(filePath), funcName),
+		FilePath: filePath,
+		Content:  strings.TrimSpace(content),
+		ChunkType: vectordb.ChunkType{
+			Type: "function",
+			Data: map[string]interface{}{
+				"function_name": funcName,
+			},
+		},
+		Language: c.detectLanguageFromPath(filePath),
+		Location: vectordb.SourceLocation{
+			StartLine:   startLine,
+			EndLine:     endLine,
+			StartColumn: 1,
+			EndColumn:   1,
+		},
+	}
+}
+
+// extractGoFunctionName extracts function name from Go function declaration
+func (c *CodeChunker) extractGoFunctionName(line string) string {
+	// func functionName(...) or func (receiver) functionName(...)
+	parts := strings.Fields(line)
+	if len(parts) < 2 {
+		return "unknown"
+	}
+
+	// Handle receiver functions: func (r *Type) methodName(...)
+	if strings.HasPrefix(parts[1], "(") {
+		for i := 2; i < len(parts); i++ {
+			if !strings.Contains(parts[i], ")") {
+				continue
+			}
+			if i+1 < len(parts) {
+				name := strings.Split(parts[i+1], "(")[0]
+				return name
+			}
+		}
+	} else {
+		// Regular function: func functionName(...)
+		name := strings.Split(parts[1], "(")[0]
+		return name
+	}
+
+	return "unknown"
+}
+
+// extractPythonFunctionName extracts function name from Python function declaration
+func (c *CodeChunker) extractPythonFunctionName(line string) string {
+	// def function_name(...):
+	parts := strings.Fields(line)
+	if len(parts) < 2 {
+		return "unknown"
+	}
+
+	name := strings.Split(parts[1], "(")[0]
+	return name
+}
+
+// detectLanguageFromPath detects language from file path
+func (c *CodeChunker) detectLanguageFromPath(filePath string) string {
+	ext := strings.ToLower(filepath.Ext(filePath))
+	switch ext {
+	case ".go":
+		return "go"
+	case ".rs":
+		return "rust"
+	case ".py":
+		return "python"
+	case ".js", ".mjs":
+		return "javascript"
+	case ".ts":
+		return "typescript"
+	case ".java":
+		return "java"
+	case ".c":
+		return "c"
+	case ".cpp", ".cc", ".cxx":
+		return "cpp"
+	case ".h", ".hpp":
+		return "c"
+	default:
+		return "text"
+	}
 }

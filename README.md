@@ -18,7 +18,7 @@ CodeForge combines large language models with cutting-edge TD Learning algorithm
 - Advanced model management and performance tracking
 
 ### 🏗️ **Universal Build System**
-- **Go, Rust, Python, JavaScript, TypeScript, Java, C++, C, PHP** ⭐ **NEW**
+- **Go, Rust, Python, JavaScript, TypeScript, Java, C++, C, PHP
 - AI-powered error fixing with iterative compilation
 - Intelligent project detection and build optimization
 - Enhanced error parsing for all supported languages
@@ -26,36 +26,14 @@ CodeForge combines large language models with cutting-edge TD Learning algorithm
 ## 🚀 Quick Start
 
 ```bash
-# Interactive mode with ML-enhanced context
+# Interactive mode with codebase awareness
 codeforge
 
 # Direct prompt with intelligent context gathering
 codeforge "Explain this function"
 
-# Lightning-fast ML-powered code search
-codeforge ml search "graph implementation"
-
-# View ML performance statistics
-codeforge ml stats
-```
-
-## 🧠 ML Commands
-
-```bash
-# Show ML service status
-codeforge ml
-
-# Search code with ML intelligence (50-300µs)
-codeforge ml search "query"
-
-# View detailed TD learning metrics
-codeforge ml stats
-
-# Toggle ML features
-codeforge ml enable/disable
-
-# Simulate learning from feedback
-codeforge ml learn "query" 0.8
+# Specify model for conversation
+codeforge -m claude-3-5-sonnet "Explain this function"
 ```
 
 ## 📊 Performance
@@ -102,15 +80,13 @@ $ codeforge
 🧠 ML Service: ✅ Enabled and running
 Features: TD Learning, Smart Search, Adaptive Context
 
-# Search for code patterns
-$ codeforge ml search "database connection"
-⚡ Search completed in 127µs
-🎯 Confidence: 0.85
-📈 Relevance: 0.92
+# Direct conversation with context
+$ codeforge "How does this authentication work?"
+🎯 Analyzing codebase with ML-enhanced context...
+📈 Found relevant patterns in 3 files
 
-# View learning progress
-$ codeforge ml stats
-📊 TD Learning Stats - Steps: 42, Avg TD Error: 0.003, Active Traces: 7
+# Use specific model
+$ codeforge -m gpt-4 "Refactor this function"
 ```
 
 ## 🤝 Contributing

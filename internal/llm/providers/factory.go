@@ -44,33 +44,27 @@ func BuildApiHandler(options llm.ApiHandlerOptions) (llm.ApiHandler, error) {
 		// TODO: Implement Bedrock handler
 		return nil, fmt.Errorf("Bedrock provider not yet implemented")
 	case llm.ProviderVertex:
-		// TODO: Implement Vertex handler
-		return nil, fmt.Errorf("Vertex provider not yet implemented")
+		handler = NewVertexHandler(options)
 	case llm.ProviderDeepSeek:
 		handler = NewDeepSeekHandler(options)
 	case llm.ProviderTogether:
-		// TODO: Implement Together handler (OpenAI-compatible)
-		return nil, fmt.Errorf("Together provider not yet implemented")
+		handler = NewTogetherHandler(options)
 	case llm.ProviderFireworks:
-		// TODO: Implement Fireworks handler (OpenAI-compatible)
-		return nil, fmt.Errorf("Fireworks provider not yet implemented")
+		handler = NewFireworksHandler(options)
 	case llm.ProviderCerebras:
-		// TODO: Implement Cerebras handler (OpenAI-compatible)
-		return nil, fmt.Errorf("Cerebras provider not yet implemented")
+		handler = NewCerebrasHandler(options)
 	case llm.ProviderGroq:
 		handler = NewGroqHandler(options)
 	case llm.ProviderOllama:
 		handler = NewOllamaHandler(options)
 	case llm.ProviderLMStudio:
-		// TODO: Implement LM Studio handler (OpenAI-compatible)
-		return nil, fmt.Errorf("LM Studio provider not yet implemented")
+		handler = NewLMStudioHandler(options)
 	case llm.ProviderXAI:
 		handler = NewXAIHandler(options)
 	case llm.ProviderMistral:
 		handler = NewMistralHandler(options)
 	case llm.ProviderQwen:
-		// TODO: Implement Qwen handler
-		return nil, fmt.Errorf("Qwen provider not yet implemented")
+		handler = NewQwenHandler(options)
 	case llm.ProviderDoubao:
 		// TODO: Implement Doubao handler
 		return nil, fmt.Errorf("Doubao provider not yet implemented")

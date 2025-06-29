@@ -477,11 +477,87 @@ func (mr *ModelRegistry) initializeFrontierModels() {
 		UpdatedAt: now,
 	}
 
+	// DeepSeek R1 model
+	deepSeekR1 := &CanonicalModel{
+		ID:      "deepseek-r1",
+		Name:    "DeepSeek R1",
+		Family:  "deepseek",
+		Version: "r1",
+		Capabilities: ModelCapabilities{
+			SupportsImages:      false,
+			SupportsThinking:    true,
+			SupportsStreaming:   true,
+			SupportsPromptCache: false,
+			SupportsTools:       true,
+		},
+		Limits: ModelLimits{
+			MaxTokens:         8192,
+			ContextWindow:     128000,
+			MaxThinkingTokens: 65536,
+		},
+		Pricing: ModelPricing{
+			InputPrice:    0.14, // $0.14 per 1M tokens
+			OutputPrice:   0.28, // $0.28 per 1M tokens
+			ThinkingPrice: 0.14, // $0.14 per 1M thinking tokens
+		},
+		Providers: map[ProviderID]ProviderModelMapping{
+			ProviderDeepSeek: {
+				ProviderModelID: "deepseek-reasoner",
+				Available:       true,
+				LastChecked:     now,
+			},
+			ProviderOpenRouter: {
+				ProviderModelID: "deepseek/deepseek-r1",
+				Available:       true,
+				LastChecked:     now,
+			},
+		},
+		CreatedAt: now,
+		UpdatedAt: now,
+	}
+
+	// Qwen 2.5 Coder model
+	qwen25Coder := &CanonicalModel{
+		ID:      "qwen-2.5-coder-32b",
+		Name:    "Qwen 2.5 Coder 32B",
+		Family:  "qwen",
+		Version: "2.5-coder-32b",
+		Capabilities: ModelCapabilities{
+			SupportsImages:      false,
+			SupportsThinking:    false,
+			SupportsStreaming:   true,
+			SupportsPromptCache: false,
+			SupportsTools:       true,
+		},
+		Limits: ModelLimits{
+			MaxTokens:     8192,
+			ContextWindow: 128000,
+		},
+		Pricing: ModelPricing{
+			InputPrice:  1.0, // $1.00 per 1M tokens
+			OutputPrice: 3.0, // $3.00 per 1M tokens
+		},
+		Providers: map[ProviderID]ProviderModelMapping{
+			ProviderQwen: {
+				ProviderModelID: "qwen2.5-coder-32b-instruct",
+				Available:       true,
+				LastChecked:     now,
+			},
+			ProviderOpenRouter: {
+				ProviderModelID: "qwen/qwen-2.5-coder-32b-instruct",
+				Available:       true,
+				LastChecked:     now,
+			},
+		},
+		CreatedAt: now,
+		UpdatedAt: now,
+	}
+
 	// Add models to registry
 	mr.models[ModelClaudeSonnet4] = claudeSonnet4
 	mr.models[ModelGPT4o] = gpt4o
 	mr.models[ModelO3Mini] = o3Mini
 	mr.models[ModelGemini25Flash] = gemini25Flash
-
-	// TODO: Add more frontier models (DeepSeek, etc.)
+	mr.models["deepseek-r1"] = deepSeekR1
+	mr.models["qwen-2.5-coder-32b"] = qwen25Coder
 }
