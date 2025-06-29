@@ -421,24 +421,3 @@ func (h *GeminiHandler) processStream(reader io.Reader, streamChan chan<- llm.Ap
 		}
 	}
 }
-
-// calculateCost calculates the cost for a Gemini API call
-func (h *GeminiHandler) calculateCost(info llm.ModelInfo, inputTokens, outputTokens, thoughtsTokens, cacheReadTokens int) float64 {
-	// Calculate input cost (excluding cached tokens)
-	billableInputTokens := inputTokens - cacheReadTokens
-	inputCost := float64(billableInputTokens) * info.InputPrice / 1000000
-
-	// Calculate output cost
-	outputCost := float64(outputTokens) * info.OutputPrice / 1000000
-
-	// Calculate cache read cost
-	cacheReadCost := float64(cacheReadTokens) * info.CacheReadsPrice / 1000000
-
-	// Calculate thinking cost (if applicable)
-	thinkingCost := 0.0
-	if info.ThinkingConfig != nil && thoughtsTokens > 0 {
-		thinkingCost = float64(thoughtsTokens) * info.ThinkingConfig.OutputPrice / 1000000
-	}
-
-	return inputCost + outputCost + cacheReadCost + thinkingCost
-}

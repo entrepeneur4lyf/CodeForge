@@ -1856,7 +1856,7 @@ func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	status := map[string]interface{}{
 		"type": "status",
 		"data": map[string]bool{
-			"embedding": embeddings.GetNative() != nil && embeddings.GetNative().IsInitialized(),
+			"embedding": embeddings.Get() != nil,
 			"vectordb":  vectordb.Get() != nil,
 			"lsp":       lsp.GetManager() != nil,
 			"mcp":       true, // MCP server is available as standalone

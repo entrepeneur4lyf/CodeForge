@@ -41,8 +41,7 @@ func BuildApiHandler(options llm.ApiHandlerOptions) (llm.ApiHandler, error) {
 	case llm.ProviderOpenRouter:
 		handler = NewOpenRouterHandler(options)
 	case llm.ProviderBedrock:
-		// TODO: Implement Bedrock handler
-		return nil, fmt.Errorf("Bedrock provider not yet implemented")
+		handler = NewBedrockHandler(options)
 	case llm.ProviderVertex:
 		handler = NewVertexHandler(options)
 	case llm.ProviderDeepSeek:
@@ -66,32 +65,23 @@ func BuildApiHandler(options llm.ApiHandlerOptions) (llm.ApiHandler, error) {
 	case llm.ProviderQwen:
 		handler = NewQwenHandler(options)
 	case llm.ProviderDoubao:
-		// TODO: Implement Doubao handler
-		return nil, fmt.Errorf("Doubao provider not yet implemented")
+		handler = NewDoubaoHandler(options)
 	case llm.ProviderSambanova:
-		// TODO: Implement Sambanova handler
-		return nil, fmt.Errorf("Sambanova provider not yet implemented")
+		handler = NewSambanovaHandler(options)
 	case llm.ProviderNebius:
-		// TODO: Implement Nebius handler
-		return nil, fmt.Errorf("Nebius provider not yet implemented")
+		handler = NewNebiusHandler(options)
 	case llm.ProviderAskSage:
-		// TODO: Implement AskSage handler
-		return nil, fmt.Errorf("AskSage provider not yet implemented")
+		handler = NewAskSageHandler(options)
 	case llm.ProviderSAPAICore:
-		// TODO: Implement SAP AI Core handler
-		return nil, fmt.Errorf("SAP AI Core provider not yet implemented")
+		handler = NewSAPAICoreHandler(options)
 	case llm.ProviderLiteLLM:
-		// TODO: Implement LiteLLM handler
-		return nil, fmt.Errorf("LiteLLM provider not yet implemented")
+		handler = NewLiteLLMHandler(options)
 	case llm.ProviderRequesty:
-		// TODO: Implement Requesty handler
-		return nil, fmt.Errorf("Requesty provider not yet implemented")
+		handler = NewRequestyHandler(options)
 	case llm.ProviderClaudeCode:
-		// TODO: Implement Claude Code handler
-		return nil, fmt.Errorf("Claude Code provider not yet implemented")
+		handler = NewClaudeCodeHandler(options)
 	case llm.ProviderGeminiCLI:
-		// TODO: Implement Gemini CLI handler
-		return nil, fmt.Errorf("Gemini CLI provider not yet implemented")
+		handler = NewGeminiHandler(options)
 	case llm.ProviderGitHub:
 		handler = NewGitHubHandler(options)
 	default:

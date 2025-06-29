@@ -553,6 +553,85 @@ func (mr *ModelRegistry) initializeFrontierModels() {
 		UpdatedAt: now,
 	}
 
+	// Llama 3.3 70B model
+	llama33 := &CanonicalModel{
+		ID:      "llama-3.3-70b",
+		Name:    "Llama 3.3 70B",
+		Family:  "llama",
+		Version: "3.3-70b",
+		Capabilities: ModelCapabilities{
+			SupportsImages:      false,
+			SupportsThinking:    false,
+			SupportsStreaming:   true,
+			SupportsPromptCache: false,
+			SupportsTools:       true,
+		},
+		Limits: ModelLimits{
+			MaxTokens:     8192,
+			ContextWindow: 128000,
+		},
+		Pricing: ModelPricing{
+			InputPrice:  0.59, // $0.59 per 1M tokens
+			OutputPrice: 0.79, // $0.79 per 1M tokens
+		},
+		Providers: map[ProviderID]ProviderModelMapping{
+			ProviderTogether: {
+				ProviderModelID: "meta-llama/Llama-3.3-70B-Instruct-Turbo",
+				Available:       true,
+				LastChecked:     now,
+			},
+			ProviderFireworks: {
+				ProviderModelID: "accounts/fireworks/models/llama-v3p3-70b-instruct",
+				Available:       true,
+				LastChecked:     now,
+			},
+			ProviderOpenRouter: {
+				ProviderModelID: "meta-llama/llama-3.3-70b-instruct",
+				Available:       true,
+				LastChecked:     now,
+			},
+		},
+		CreatedAt: now,
+		UpdatedAt: now,
+	}
+
+	// Mistral Large model
+	mistralLarge := &CanonicalModel{
+		ID:      "mistral-large",
+		Name:    "Mistral Large",
+		Family:  "mistral",
+		Version: "large",
+		Capabilities: ModelCapabilities{
+			SupportsImages:      false,
+			SupportsThinking:    false,
+			SupportsStreaming:   true,
+			SupportsPromptCache: false,
+			SupportsTools:       true,
+		},
+		Limits: ModelLimits{
+			MaxTokens:     8192,
+			ContextWindow: 128000,
+		},
+		Pricing: ModelPricing{
+			InputPrice:  2.0, // $2.00 per 1M tokens
+			OutputPrice: 6.0, // $6.00 per 1M tokens
+		},
+		Providers: map[ProviderID]ProviderModelMapping{
+			ProviderMistral: {
+				ProviderModelID: "mistral-large-latest",
+				Available:       true,
+				LastChecked:     now,
+			},
+			ProviderOpenRouter: {
+				ProviderModelID: "mistralai/mistral-large",
+				Available:       true,
+				LastChecked:     now,
+			},
+		},
+		CreatedAt: now,
+		UpdatedAt: now,
+	}
+
 	// Add models to registry
 	mr.models[ModelClaudeSonnet4] = claudeSonnet4
 	mr.models[ModelGPT4o] = gpt4o
@@ -560,4 +639,6 @@ func (mr *ModelRegistry) initializeFrontierModels() {
 	mr.models[ModelGemini25Flash] = gemini25Flash
 	mr.models["deepseek-r1"] = deepSeekR1
 	mr.models["qwen-2.5-coder-32b"] = qwen25Coder
+	mr.models["llama-3.3-70b"] = llama33
+	mr.models["mistral-large"] = mistralLarge
 }

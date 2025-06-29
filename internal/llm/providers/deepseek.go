@@ -193,9 +193,7 @@ func (h *DeepSeekHandler) processStreamResponse(resp *http.Response, streamChan 
 			continue
 		}
 
-		if strings.HasPrefix(line, "data: ") {
-			line = line[6:] // Remove "data: " prefix
-		}
+		line = strings.TrimPrefix(line, "data: ")
 
 		var streamEvent DeepSeekStreamEvent
 		if err := json.Unmarshal([]byte(line), &streamEvent); err != nil {

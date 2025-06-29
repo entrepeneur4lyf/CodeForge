@@ -208,11 +208,6 @@ func (h *TogetherHandler) getDefaultModelInfo(modelID string) llm.ModelInfo {
 	return info
 }
 
-// convertMessages converts LLM messages to OpenAI format
-func (h *TogetherHandler) convertMessages(systemPrompt string, messages []llm.Message) ([]transform.OpenAIMessage, error) {
-	return convertToOpenAIMessages(systemPrompt, messages)
-}
-
 // streamRequest makes a streaming request to the Together AI API
 func (h *TogetherHandler) streamRequest(ctx context.Context, request TogetherRequest) (llm.ApiStream, error) {
 	// Marshal request

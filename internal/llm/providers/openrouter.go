@@ -7,10 +7,12 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"regexp"
 	"strings"
 	"sync"
 	"time"
+
+	"golang.org/x/text/cases"
+	"golang.org/x/text/language"
 
 	"github.com/entrepeneur4lyf/codeforge/internal/llm"
 	"github.com/entrepeneur4lyf/codeforge/internal/llm/models"
@@ -472,13 +474,6 @@ func (h *OpenRouterHandler) processStream(reader io.Reader, streamChan chan<- ll
 	}
 }
 
-// isModelsCacheValid checks if the cached models are still valid
-func (c *OpenRouterModelsCache) isValid() bool {
-	c.mutex.RLock()
-	defer c.mutex.RUnlock()
-	return time.Since(c.timestamp) < cacheTTL && len(c.models) > 0
-}
-
 // getCachedModels returns cached models if valid
 func (c *OpenRouterModelsCache) getCachedModels() ([]OpenRouterModel, bool) {
 	c.mutex.RLock()
@@ -621,7 +616,8 @@ func getTopModelsFromScraping(ctx context.Context, limit int) ([]OpenRouterModel
 		parts := strings.Split(modelID, "/")
 		name := modelID
 		if len(parts) == 2 {
-			name = strings.Title(strings.ReplaceAll(parts[1], "-", " "))
+			caser := cases.Title(language.English)
+			name = caser.String(strings.ReplaceAll(parts[1], "-", " "))
 		}
 
 		model := OpenRouterModel{
@@ -788,56 +784,6 @@ func scrapeOpenRouterRankings(ctx context.Context) ([]string, error) {
 	}
 
 	return getCuratedTopModels(), nil
-}
-
-// parseModelsFromHTML extracts model IDs from HTML content
-func parseModelsFromHTML(html string) []string {
-	var models []string
-
-	// Look for model IDs in common patterns
-	patterns := []string{
-		// JSON data with model IDs
-		`"id"\s*:\s*"([a-zA-Z0-9_-]+/[a-zA-Z0-9_.-]+)"`,
-		// Links to models
-		`href="[^"]*models/([a-zA-Z0-9_-]+/[a-zA-Z0-9_.-]+)"`,
-		// Direct model references
-		`(anthropic/claude-[a-zA-Z0-9_.-]+)`,
-		`(openai/gpt-[a-zA-Z0-9_.-]+)`,
-		`(google/gemini-[a-zA-Z0-9_.-]+)`,
-		`(meta-llama/[a-zA-Z0-9_.-]+)`,
-		`(mistralai/[a-zA-Z0-9_.-]+)`,
-		`(qwen/[a-zA-Z0-9_.-]+)`,
-		`(deepseek/[a-zA-Z0-9_.-]+)`,
-		`(x-ai/[a-zA-Z0-9_.-]+)`,
-		`(cohere/[a-zA-Z0-9_.-]+)`,
-		`(nvidia/[a-zA-Z0-9_.-]+)`,
-		`(microsoft/[a-zA-Z0-9_.-]+)`,
-		`(perplexity/[a-zA-Z0-9_.-]+)`,
-	}
-
-	seen := make(map[string]bool)
-
-	for _, pattern := range patterns {
-		re := regexp.MustCompile(pattern)
-		matches := re.FindAllStringSubmatch(html, -1)
-
-		for _, match := range matches {
-			if len(match) > 1 {
-				modelID := match[1]
-				if !seen[modelID] && strings.Contains(modelID, "/") {
-					models = append(models, modelID)
-					seen[modelID] = true
-
-					// Stop at 20 models
-					if len(models) >= 20 {
-						return models
-					}
-				}
-			}
-		}
-	}
-
-	return models
 }
 
 // getCuratedTopModels returns a curated list of top models based on popularity

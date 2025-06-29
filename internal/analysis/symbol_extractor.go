@@ -13,9 +13,11 @@ import (
 
 // SymbolExtractor provides enhanced symbol extraction using LSP
 type SymbolExtractor struct {
-	lspManager    *lsp.Manager
-	mu            sync.RWMutex
-	openDocuments map[string]bool
+	lspManager      *lsp.Manager
+	mu              sync.RWMutex
+	openDocuments   map[string]bool
+	sourceContent   string // Current source content for documentation extraction
+	currentLanguage string // Current language for optimization
 }
 
 // NewSymbolExtractor creates a new symbol extractor
@@ -28,6 +30,9 @@ func NewSymbolExtractor() *SymbolExtractor {
 
 // ExtractSymbols extracts symbols from a file using LSP
 func (se *SymbolExtractor) ExtractSymbols(ctx context.Context, filePath, content, language string) ([]vectordb.Symbol, error) {
+	// Store source content for documentation extraction
+	se.sourceContent = content
+
 	if se.lspManager == nil {
 		return se.fallbackSymbolExtraction(content, language), nil
 	}
@@ -165,6 +170,15 @@ func (se *SymbolExtractor) ensureDocumentOpen(ctx context.Context, client *lsp.C
 		return nil
 	}
 
+	// Store content for potential fallback symbol extraction
+	se.sourceContent = content
+
+	// Use language information for better symbol extraction
+	if language != "" {
+		// Store language for potential fallback extraction optimization
+		se.currentLanguage = language
+	}
+
 	// Open the document in the LSP client
 	err := client.OpenFile(ctx, filePath)
 	if err != nil {
@@ -218,8 +232,10 @@ func (se *SymbolExtractor) convertLSPSymbols(lspSymbols []protocol.DocumentSymbo
 			},
 		}
 
-		// Documentation extraction would be implemented when available in protocol
-		// TODO: Add documentation extraction when protocol supports it
+		// Extract documentation from source code
+		if se.sourceContent != "" {
+			symbol.Documentation = se.extractSourceDocumentation(lspSymbol, se.sourceContent)
+		}
 
 		symbols = append(symbols, symbol)
 
@@ -317,20 +333,8 @@ func (se *SymbolExtractor) convertSymbolKind(kind protocol.SymbolKind) string {
 	}
 }
 
-// extractDocumentation extracts documentation text from LSP documentation
-func (se *SymbolExtractor) extractDocumentation(doc interface{}) string {
-	switch d := doc.(type) {
-	case string:
-		return d
-	case protocol.MarkupContent:
-		return d.Value
-	default:
-		return ""
-	}
-}
-
 // extractHoverText extracts text from LSP hover contents
-func (se *SymbolExtractor) extractHoverText(contents interface{}) string {
+func (se *SymbolExtractor) extractHoverText(contents any) string {
 	switch c := contents.(type) {
 	case string:
 		return c
@@ -557,4 +561,67 @@ func (se *SymbolExtractor) extractRustSymbols(line string, lineNum int) []vector
 	}
 
 	return symbols
+}
+
+// extractSourceDocumentation extracts documentation for a symbol from source content
+func (se *SymbolExtractor) extractSourceDocumentation(lspSymbol protocol.DocumentSymbol, sourceContent string) string {
+	lines := strings.Split(sourceContent, "\n")
+
+	// Get the line number where the symbol starts (LSP uses 0-based indexing)
+	symbolLine := int(lspSymbol.Range.Start.Line)
+
+	if symbolLine >= len(lines) || symbolLine < 0 {
+		return ""
+	}
+
+	var docLines []string
+
+	// Look backwards from the symbol line to find documentation comments
+	for i := symbolLine - 1; i >= 0; i-- {
+		line := strings.TrimSpace(lines[i])
+
+		// Stop if we hit an empty line or non-comment
+		if line == "" {
+			break
+		}
+
+		// Check for different comment styles
+		if after, found := strings.CutPrefix(line, "//"); found {
+			// Go, Rust, C++, JavaScript style comments
+			comment := strings.TrimSpace(after)
+			docLines = append([]string{comment}, docLines...)
+		} else if after, found := strings.CutPrefix(line, "#"); found {
+			// Python, Shell style comments
+			comment := strings.TrimSpace(after)
+			docLines = append([]string{comment}, docLines...)
+		} else if strings.HasPrefix(line, "*") && i > 0 {
+			// Multi-line comment continuation
+			comment := strings.TrimSpace(strings.TrimPrefix(line, "*"))
+			docLines = append([]string{comment}, docLines...)
+		} else if strings.HasPrefix(line, "/**") || strings.HasPrefix(line, "/*") {
+			// Start of multi-line comment
+			comment := strings.TrimSpace(strings.TrimPrefix(strings.TrimPrefix(line, "/**"), "/*"))
+			if comment != "" {
+				docLines = append([]string{comment}, docLines...)
+			}
+			break
+		} else if after, found := strings.CutPrefix(line, "\"\"\""); found {
+			// Python docstring - extract content if present
+			docstring := strings.TrimSpace(after)
+			if docstring != "" && !strings.HasSuffix(docstring, "\"\"\"") {
+				docLines = append([]string{docstring}, docLines...)
+			}
+			break // Handle docstrings separately if needed
+		} else {
+			// Not a comment, stop looking
+			break
+		}
+	}
+
+	// Join the documentation lines
+	if len(docLines) > 0 {
+		return strings.Join(docLines, " ")
+	}
+
+	return ""
 }

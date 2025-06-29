@@ -273,12 +273,13 @@ func (cb *CircuitBreaker) onFailure() {
 
 // onSuccess handles operation success
 func (cb *CircuitBreaker) onSuccess() {
-	if cb.state == CircuitBreakerHalfOpen {
+	switch cb.state {
+	case CircuitBreakerHalfOpen:
 		cb.successCount++
 		// Reset circuit after successful operation in half-open state
 		cb.state = CircuitBreakerClosed
 		cb.failures = 0
-	} else if cb.state == CircuitBreakerClosed {
+	case CircuitBreakerClosed:
 		cb.failures = 0
 	}
 }

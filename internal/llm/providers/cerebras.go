@@ -40,12 +40,12 @@ type CerebrasStreamOptions struct {
 
 // CerebrasStreamEvent represents a streaming event from Cerebras
 type CerebrasStreamEvent struct {
-	ID      string            `json:"id"`
-	Object  string            `json:"object"`
-	Created int64             `json:"created"`
-	Model   string            `json:"model"`
-	Choices []CerebrasChoice  `json:"choices"`
-	Usage   *CerebrasUsage    `json:"usage,omitempty"`
+	ID      string           `json:"id"`
+	Object  string           `json:"object"`
+	Created int64            `json:"created"`
+	Model   string           `json:"model"`
+	Choices []CerebrasChoice `json:"choices"`
+	Usage   *CerebrasUsage   `json:"usage,omitempty"`
 }
 
 // CerebrasChoice represents a choice in the response
@@ -157,14 +157,14 @@ func (h *CerebrasHandler) getDefaultModelInfo(modelID string) llm.ModelInfo {
 		ContextWindow:       128000,
 		SupportsImages:      false,
 		SupportsPromptCache: false,
-		InputPrice:          0.1,  // $0.10 per 1M tokens (ultra-fast inference)
-		OutputPrice:         0.1,  // $0.10 per 1M tokens (ultra-fast inference)
+		InputPrice:          0.1, // $0.10 per 1M tokens (ultra-fast inference)
+		OutputPrice:         0.1, // $0.10 per 1M tokens (ultra-fast inference)
 		Description:         fmt.Sprintf("Cerebras ultra-fast model: %s", modelID),
 	}
 
 	// Model-specific configurations
 	modelLower := strings.ToLower(modelID)
-	
+
 	// Llama models on Cerebras (ultra-fast)
 	if strings.Contains(modelLower, "llama") {
 		if strings.Contains(modelLower, "70b") {
@@ -188,11 +188,6 @@ func (h *CerebrasHandler) getDefaultModelInfo(modelID string) llm.ModelInfo {
 	}
 
 	return info
-}
-
-// convertMessages converts LLM messages to OpenAI format
-func (h *CerebrasHandler) convertMessages(systemPrompt string, messages []llm.Message) ([]transform.OpenAIMessage, error) {
-	return convertToOpenAIMessages(systemPrompt, messages)
 }
 
 // streamRequest makes a streaming request to the Cerebras API

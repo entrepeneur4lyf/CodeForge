@@ -299,22 +299,6 @@ func (ci *CodeIntelligence) GetTDStats() *TDStats {
 	return nil
 }
 
-// generateQueryVariations creates variations of the user query for broader context
-func (ci *CodeIntelligence) generateQueryVariations(query string) []string {
-	variations := make([]string, 0)
-
-	// Add implementation-focused variation
-	variations = append(variations, query+" implementation")
-
-	// Add usage-focused variation
-	variations = append(variations, query+" usage example")
-
-	// Add definition-focused variation
-	variations = append(variations, query+" definition")
-
-	return variations
-}
-
 // Helper methods
 
 func (ci *CodeIntelligence) fallbackSearch(query string, startNodeID string) *SearchResult {
@@ -323,8 +307,8 @@ func (ci *CodeIntelligence) fallbackSearch(query string, startNodeID string) *Se
 		BestPath:    []string{startNodeID},
 		Confidence:  0.1,
 		Relevance:   0.1,
-		Explanation: "Fallback search (ML disabled)",
-		Metadata:    map[string]interface{}{"method": "fallback"},
+		Explanation: fmt.Sprintf("Fallback search for '%s' (ML disabled)", query),
+		Metadata:    map[string]interface{}{"method": "fallback", "query": query},
 		Experiences: []Experience{},
 	}
 }
@@ -347,6 +331,12 @@ func (ci *CodeIntelligence) combineResults(mctsResult *SearchResult, qAction *Co
 	// Intelligent combination of MCTS and Q-Learning results
 	result := mctsResult
 
+	// Add query context to metadata
+	if result.Metadata == nil {
+		result.Metadata = make(map[string]interface{})
+	}
+	result.Metadata["original_query"] = query
+
 	if qAction != nil && qAction.Confidence > 0.5 {
 		// Q-Learning suggests a high-confidence action
 		if len(result.BestPath) > 0 {
@@ -356,7 +346,7 @@ func (ci *CodeIntelligence) combineResults(mctsResult *SearchResult, qAction *Co
 
 		// Boost confidence if both algorithms agree
 		result.Confidence = (result.Confidence + qAction.Confidence) / 2.0
-		result.Explanation += fmt.Sprintf(" Enhanced with Q-Learning (confidence: %.2f)", qAction.Confidence)
+		result.Explanation += fmt.Sprintf(" Enhanced with Q-Learning for '%s' (confidence: %.2f)", query, qAction.Confidence)
 	}
 
 	return result
@@ -422,9 +412,9 @@ func (ci *CodeIntelligence) nodeMatchesQuery(node *graph.Node, query string) boo
 
 func (ci *CodeIntelligence) generateIntelligentContext(results []*SearchResult, query string, maxNodes int) string {
 	// Generate intelligent context from ML results
-	context := fmt.Sprintf("# 🧠 ML-Enhanced Code Context\n\n")
+	context := "# 🧠 ML-Enhanced Code Context\n\n"
 	context += fmt.Sprintf("**Query:** %s\n", query)
-	context += fmt.Sprintf("**Analysis Method:** MCTS + Q-Learning\n\n")
+	context += "**Analysis Method:** MCTS + Q-Learning\n\n"
 
 	if len(results) == 0 {
 		context += "No relevant code found.\n"

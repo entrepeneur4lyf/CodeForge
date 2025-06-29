@@ -40,20 +40,20 @@ type LMStudioStreamOptions struct {
 
 // LMStudioStreamEvent represents a streaming event from LM Studio
 type LMStudioStreamEvent struct {
-	ID      string             `json:"id"`
-	Object  string             `json:"object"`
-	Created int64              `json:"created"`
-	Model   string             `json:"model"`
-	Choices []LMStudioChoice   `json:"choices"`
-	Usage   *LMStudioUsage     `json:"usage,omitempty"`
+	ID      string           `json:"id"`
+	Object  string           `json:"object"`
+	Created int64            `json:"created"`
+	Model   string           `json:"model"`
+	Choices []LMStudioChoice `json:"choices"`
+	Usage   *LMStudioUsage   `json:"usage,omitempty"`
 }
 
 // LMStudioChoice represents a choice in the response
 type LMStudioChoice struct {
-	Index        int               `json:"index"`
-	Delta        *LMStudioDelta    `json:"delta,omitempty"`
-	Message      *LMStudioMessage  `json:"message,omitempty"`
-	FinishReason *string           `json:"finish_reason,omitempty"`
+	Index        int              `json:"index"`
+	Delta        *LMStudioDelta   `json:"delta,omitempty"`
+	Message      *LMStudioMessage `json:"message,omitempty"`
+	FinishReason *string          `json:"finish_reason,omitempty"`
 }
 
 // LMStudioDelta represents incremental content in streaming
@@ -157,14 +157,14 @@ func (h *LMStudioHandler) getDefaultModelInfo(modelID string) llm.ModelInfo {
 		ContextWindow:       32768,
 		SupportsImages:      false,
 		SupportsPromptCache: false,
-		InputPrice:          0.0,  // Local models are free
-		OutputPrice:         0.0,  // Local models are free
+		InputPrice:          0.0, // Local models are free
+		OutputPrice:         0.0, // Local models are free
 		Description:         fmt.Sprintf("LM Studio local model: %s", modelID),
 	}
 
 	// Model-specific configurations based on common local models
 	modelLower := strings.ToLower(modelID)
-	
+
 	// Llama models
 	if strings.Contains(modelLower, "llama") {
 		if strings.Contains(modelLower, "70b") || strings.Contains(modelLower, "405b") {
@@ -204,11 +204,6 @@ func (h *LMStudioHandler) getDefaultModelInfo(modelID string) llm.ModelInfo {
 	return info
 }
 
-// convertMessages converts LLM messages to OpenAI format
-func (h *LMStudioHandler) convertMessages(systemPrompt string, messages []llm.Message) ([]transform.OpenAIMessage, error) {
-	return convertToOpenAIMessages(systemPrompt, messages)
-}
-
 // streamRequest makes a streaming request to the LM Studio API
 func (h *LMStudioHandler) streamRequest(ctx context.Context, request LMStudioRequest) (llm.ApiStream, error) {
 	// Marshal request
@@ -225,7 +220,7 @@ func (h *LMStudioHandler) streamRequest(ctx context.Context, request LMStudioReq
 
 	// Set headers
 	req.Header.Set("Content-Type", "application/json")
-	
+
 	// LM Studio typically doesn't require API key for local access
 	if h.options.APIKey != "" {
 		req.Header.Set("Authorization", "Bearer "+h.options.APIKey)

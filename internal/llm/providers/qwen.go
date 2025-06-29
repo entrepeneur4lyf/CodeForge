@@ -49,10 +49,10 @@ type QwenStreamEvent struct {
 
 // QwenChoice represents a choice in the response
 type QwenChoice struct {
-	Index        int         `json:"index"`
-	Delta        *QwenDelta  `json:"delta,omitempty"`
+	Index        int          `json:"index"`
+	Delta        *QwenDelta   `json:"delta,omitempty"`
 	Message      *QwenMessage `json:"message,omitempty"`
-	FinishReason *string     `json:"finish_reason,omitempty"`
+	FinishReason *string      `json:"finish_reason,omitempty"`
 }
 
 // QwenDelta represents incremental content in streaming
@@ -151,14 +151,14 @@ func (h *QwenHandler) getDefaultModelInfo(modelID string) llm.ModelInfo {
 		ContextWindow:       32768,
 		SupportsImages:      false,
 		SupportsPromptCache: false,
-		InputPrice:          0.5,  // Approximate pricing
-		OutputPrice:         1.5,  // Approximate pricing
+		InputPrice:          0.5, // Approximate pricing
+		OutputPrice:         1.5, // Approximate pricing
 		Description:         fmt.Sprintf("Qwen model: %s", modelID),
 	}
 
 	// Model-specific configurations
 	modelLower := strings.ToLower(modelID)
-	
+
 	// Qwen2.5 models
 	if strings.Contains(modelLower, "qwen2.5") {
 		if strings.Contains(modelLower, "72b") {
@@ -204,11 +204,6 @@ func (h *QwenHandler) getDefaultModelInfo(modelID string) llm.ModelInfo {
 	}
 
 	return info
-}
-
-// convertMessages converts LLM messages to OpenAI format
-func (h *QwenHandler) convertMessages(systemPrompt string, messages []llm.Message) ([]transform.OpenAIMessage, error) {
-	return convertToOpenAIMessages(systemPrompt, messages)
 }
 
 // streamRequest makes a streaming request to the Qwen API

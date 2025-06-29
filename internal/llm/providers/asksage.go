@@ -14,72 +14,72 @@ import (
 	"github.com/entrepeneur4lyf/codeforge/internal/llm/transform"
 )
 
-// FireworksHandler implements the ApiHandler interface for Fireworks AI's API
-// Fireworks AI is OpenAI-compatible with some specific features
-type FireworksHandler struct {
+// AskSageHandler implements the ApiHandler interface for AskSage AI platform
+// AskSage is an AI assistant platform providing various LLM services
+type AskSageHandler struct {
 	options llm.ApiHandlerOptions
 	client  *http.Client
 	baseURL string
 }
 
-// FireworksRequest represents a request to Fireworks AI's API (OpenAI-compatible)
-type FireworksRequest struct {
+// AskSageRequest represents a request to AskSage's API (OpenAI-compatible)
+type AskSageRequest struct {
 	Model         string                    `json:"model"`
 	Messages      []transform.OpenAIMessage `json:"messages"`
 	MaxTokens     *int                      `json:"max_tokens,omitempty"`
 	Temperature   *float64                  `json:"temperature,omitempty"`
 	Stream        bool                      `json:"stream"`
-	StreamOptions *FireworksStreamOptions   `json:"stream_options,omitempty"`
+	StreamOptions *AskSageStreamOptions     `json:"stream_options,omitempty"`
 	User          string                    `json:"user,omitempty"`
 }
 
-// FireworksStreamOptions configures streaming behavior
-type FireworksStreamOptions struct {
+// AskSageStreamOptions configures streaming behavior
+type AskSageStreamOptions struct {
 	IncludeUsage bool `json:"include_usage"`
 }
 
-// FireworksStreamEvent represents a streaming event from Fireworks AI
-type FireworksStreamEvent struct {
-	ID      string            `json:"id"`
-	Object  string            `json:"object"`
-	Created int64             `json:"created"`
-	Model   string            `json:"model"`
-	Choices []FireworksChoice `json:"choices"`
-	Usage   *FireworksUsage   `json:"usage,omitempty"`
+// AskSageStreamEvent represents a streaming event from AskSage
+type AskSageStreamEvent struct {
+	ID      string          `json:"id"`
+	Object  string          `json:"object"`
+	Created int64           `json:"created"`
+	Model   string          `json:"model"`
+	Choices []AskSageChoice `json:"choices"`
+	Usage   *AskSageUsage   `json:"usage,omitempty"`
 }
 
-// FireworksChoice represents a choice in the response
-type FireworksChoice struct {
-	Index        int               `json:"index"`
-	Delta        *FireworksDelta   `json:"delta,omitempty"`
-	Message      *FireworksMessage `json:"message,omitempty"`
-	FinishReason *string           `json:"finish_reason,omitempty"`
+// AskSageChoice represents a choice in the response
+type AskSageChoice struct {
+	Index        int             `json:"index"`
+	Delta        *AskSageDelta   `json:"delta,omitempty"`
+	Message      *AskSageMessage `json:"message,omitempty"`
+	FinishReason *string         `json:"finish_reason,omitempty"`
 }
 
-// FireworksDelta represents incremental content in streaming
-type FireworksDelta struct {
+// AskSageDelta represents incremental content in streaming
+type AskSageDelta struct {
 	Role    string `json:"role,omitempty"`
 	Content string `json:"content,omitempty"`
 }
 
-// FireworksMessage represents a complete message
-type FireworksMessage struct {
+// AskSageMessage represents a complete message
+type AskSageMessage struct {
 	Role    string `json:"role"`
 	Content string `json:"content"`
 }
 
-// FireworksUsage represents token usage information
-type FireworksUsage struct {
+// AskSageUsage represents token usage information
+type AskSageUsage struct {
 	PromptTokens     int `json:"prompt_tokens"`
 	CompletionTokens int `json:"completion_tokens"`
 	TotalTokens      int `json:"total_tokens"`
 }
 
-// NewFireworksHandler creates a new Fireworks AI handler
-func NewFireworksHandler(options llm.ApiHandlerOptions) *FireworksHandler {
+// NewAskSageHandler creates a new AskSage handler
+func NewAskSageHandler(options llm.ApiHandlerOptions) *AskSageHandler {
 	baseURL := options.OpenAIBaseURL
 	if baseURL == "" {
-		baseURL = "https://api.fireworks.ai/inference/v1"
+		baseURL = "https://api.asksage.ai/v1"
 	}
 
 	// Configure timeout based on request timeout option
@@ -88,7 +88,7 @@ func NewFireworksHandler(options llm.ApiHandlerOptions) *FireworksHandler {
 		timeout = time.Duration(options.RequestTimeoutMs) * time.Millisecond
 	}
 
-	return &FireworksHandler{
+	return &AskSageHandler{
 		options: options,
 		client: &http.Client{
 			Timeout: timeout,
@@ -98,7 +98,7 @@ func NewFireworksHandler(options llm.ApiHandlerOptions) *FireworksHandler {
 }
 
 // CreateMessage implements the ApiHandler interface
-func (h *FireworksHandler) CreateMessage(ctx context.Context, systemPrompt string, messages []llm.Message) (llm.ApiStream, error) {
+func (h *AskSageHandler) CreateMessage(ctx context.Context, systemPrompt string, messages []llm.Message) (llm.ApiStream, error) {
 	model := h.GetModel()
 
 	// Convert messages to OpenAI format
@@ -108,11 +108,11 @@ func (h *FireworksHandler) CreateMessage(ctx context.Context, systemPrompt strin
 	}
 
 	// Prepare request
-	request := FireworksRequest{
+	request := AskSageRequest{
 		Model:    model.ID,
 		Messages: openAIMessages,
 		Stream:   true,
-		StreamOptions: &FireworksStreamOptions{
+		StreamOptions: &AskSageStreamOptions{
 			IncludeUsage: true,
 		},
 	}
@@ -136,7 +136,7 @@ func (h *FireworksHandler) CreateMessage(ctx context.Context, systemPrompt strin
 }
 
 // GetModel implements the ApiHandler interface
-func (h *FireworksHandler) GetModel() llm.ModelResponse {
+func (h *AskSageHandler) GetModel() llm.ModelResponse {
 	return llm.ModelResponse{
 		ID:   h.options.ModelID,
 		Info: h.getDefaultModelInfo(h.options.ModelID),
@@ -144,60 +144,55 @@ func (h *FireworksHandler) GetModel() llm.ModelResponse {
 }
 
 // GetApiStreamUsage implements the ApiHandler interface
-func (h *FireworksHandler) GetApiStreamUsage() (*llm.ApiStreamUsageChunk, error) {
-	// Fireworks AI provides usage in the final stream event
+func (h *AskSageHandler) GetApiStreamUsage() (*llm.ApiStreamUsageChunk, error) {
+	// AskSage provides usage in the final stream event
 	return nil, nil
 }
 
-// getDefaultModelInfo returns default model information for Fireworks AI models
-func (h *FireworksHandler) getDefaultModelInfo(modelID string) llm.ModelInfo {
-	// Default configuration for Fireworks AI models
+// getDefaultModelInfo returns default model information for AskSage models
+func (h *AskSageHandler) getDefaultModelInfo(modelID string) llm.ModelInfo {
+	// Default configuration for AskSage models
 	info := llm.ModelInfo{
 		MaxTokens:           4096,
 		ContextWindow:       32768,
 		SupportsImages:      false,
 		SupportsPromptCache: false,
-		InputPrice:          0.2, // $0.20 per 1M tokens (typical)
-		OutputPrice:         0.2, // $0.20 per 1M tokens (typical)
-		Description:         fmt.Sprintf("Fireworks AI model: %s", modelID),
+		InputPrice:          0.4, // Assistant platform pricing
+		OutputPrice:         0.8, // Assistant platform pricing
+		Description:         fmt.Sprintf("AskSage AI model: %s", modelID),
 	}
 
 	// Model-specific configurations
 	modelLower := strings.ToLower(modelID)
 
-	// Llama models
-	if strings.Contains(modelLower, "llama") {
-		if strings.Contains(modelLower, "70b") || strings.Contains(modelLower, "405b") {
-			info.ContextWindow = 128000
-			info.MaxTokens = 8192
-			info.InputPrice = 0.9
-			info.OutputPrice = 0.9
-		} else if strings.Contains(modelLower, "8b") || strings.Contains(modelLower, "7b") {
-			info.ContextWindow = 128000
-			info.MaxTokens = 8192
-			info.InputPrice = 0.2
-			info.OutputPrice = 0.2
-		}
+	// Pro models
+	if strings.Contains(modelLower, "pro") {
+		info.ContextWindow = 128000
+		info.MaxTokens = 8192
+		info.InputPrice = 1.0
+		info.OutputPrice = 2.0
 	}
 
-	// Code models
+	// Lite models
+	if strings.Contains(modelLower, "lite") {
+		info.ContextWindow = 16384
+		info.MaxTokens = 4096
+		info.InputPrice = 0.2
+		info.OutputPrice = 0.4
+	}
+
+	// Coding models
 	if strings.Contains(modelLower, "code") {
 		info.MaxTokens = 8192
 		info.ContextWindow = 32768
-		info.Description = fmt.Sprintf("Fireworks AI code model: %s", modelID)
-	}
-
-	// Vision models
-	if strings.Contains(modelLower, "vision") || strings.Contains(modelLower, "llava") {
-		info.SupportsImages = true
-		info.Description = fmt.Sprintf("Fireworks AI vision model: %s", modelID)
+		info.Description = fmt.Sprintf("AskSage coding model: %s", modelID)
 	}
 
 	return info
 }
 
-// streamRequest makes a streaming request to the Fireworks AI API
-func (h *FireworksHandler) streamRequest(ctx context.Context, request FireworksRequest) (llm.ApiStream, error) {
+// streamRequest makes a streaming request to the AskSage API
+func (h *AskSageHandler) streamRequest(ctx context.Context, request AskSageRequest) (llm.ApiStream, error) {
 	// Marshal request
 	requestBody, err := json.Marshal(request)
 	if err != nil {
@@ -245,8 +240,8 @@ func (h *FireworksHandler) streamRequest(ctx context.Context, request FireworksR
 	return streamChan, nil
 }
 
-// processStream processes the streaming response from Fireworks AI
-func (h *FireworksHandler) processStream(reader io.Reader, streamChan chan<- llm.ApiStreamChunk) {
+// processStream processes the streaming response from AskSage
+func (h *AskSageHandler) processStream(reader io.Reader, streamChan chan<- llm.ApiStreamChunk) {
 	scanner := NewSSEScanner(reader)
 
 	for scanner.Scan() {
@@ -263,7 +258,7 @@ func (h *FireworksHandler) processStream(reader io.Reader, streamChan chan<- llm
 		}
 
 		// Parse the event data
-		var streamEvent FireworksStreamEvent
+		var streamEvent AskSageStreamEvent
 		if err := json.Unmarshal([]byte(event.Data), &streamEvent); err != nil {
 			continue // Skip malformed events
 		}

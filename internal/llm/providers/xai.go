@@ -193,9 +193,7 @@ func (h *XAIHandler) processStreamResponse(resp *http.Response, streamChan chan<
 			continue
 		}
 
-		if strings.HasPrefix(line, "data: ") {
-			line = line[6:] // Remove "data: " prefix
-		}
+		line = strings.TrimPrefix(line, "data: ")
 
 		var streamEvent XAIStreamEvent
 		if err := json.Unmarshal([]byte(line), &streamEvent); err != nil {
