@@ -90,8 +90,10 @@ func (s *Server) handleAuthStatus(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Validate token
-	session, err := s.auth.ValidateToken(token)
+	// Validate token with enhanced security
+	ipAddress := s.auth.getRealIP(r)
+	userAgent := r.UserAgent()
+	session, err := s.auth.ValidateTokenWithContext(token, ipAddress, userAgent)
 	if err != nil {
 		s.writeJSON(w, AuthStatusResponse{Authenticated: false})
 		return
@@ -122,19 +124,24 @@ func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Validate and remove session
-	session, err := s.auth.ValidateToken(token)
+	ipAddress := s.auth.getRealIP(r)
+	userAgent := r.UserAgent()
+	session, err := s.auth.ValidateTokenWithContext(token, ipAddress, userAgent)
 	if err != nil {
 		s.writeError(w, "Invalid token", http.StatusUnauthorized)
 		return
 	}
 
-	// Remove session and token
+	// Remove session and all associated tokens
 	s.auth.mu.Lock()
 	delete(s.auth.sessions, session.ID)
-	
-	// Find and remove the token
-	tokenHash := s.auth.hashToken(token)
-	delete(s.auth.tokens, tokenHash)
+
+	// Find and remove all tokens for this session
+	for tokenHash, tokenEntry := range s.auth.tokens {
+		if tokenEntry.SessionID == session.ID {
+			delete(s.auth.tokens, tokenHash)
+		}
+	}
 	s.auth.mu.Unlock()
 
 	response := map[string]interface{}{
@@ -151,17 +158,24 @@ func (s *Server) handleAuthInfo(w http.ResponseWriter, r *http.Request) {
 		"type":        "localhost-only",
 		"description": "Secure authentication for localhost connections without TLS",
 		"features": []string{
-			"Cryptographically secure tokens",
-			"Session management",
+			"256-bit cryptographically secure tokens",
+			"SHA-256 hashing with session-specific salts",
 			"IP address validation",
+			"User-Agent validation",
+			"Session hijacking prevention",
 			"Automatic token expiration",
 			"No TLS required for localhost",
 		},
 		"security": map[string]interface{}{
-			"token_length":    64, // 32 bytes = 64 hex chars
-			"session_timeout": "24 hours",
-			"ip_validation":   true,
-			"localhost_only":  true,
+			"token_length":         64, // 32 bytes = 64 hex chars
+			"salt_length":          64, // 32 bytes = 64 hex chars
+			"hash_algorithm":       "SHA-256",
+			"session_timeout":      "24 hours",
+			"ip_validation":        true,
+			"user_agent_check":     true,
+			"session_binding":      true,
+			"localhost_only":       true,
+			"hijacking_protection": true,
 		},
 		"stats": s.auth.GetStats(),
 	}

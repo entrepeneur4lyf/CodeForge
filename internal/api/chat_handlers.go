@@ -2,7 +2,9 @@ package api
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
+	"sync"
 	"time"
 
 	"github.com/gorilla/mux"
@@ -12,6 +14,7 @@ import (
 type ChatSession struct {
 	ID        string    `json:"id"`
 	Title     string    `json:"title"`
+	Status    string    `json:"status"`
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
 	Model     string    `json:"model"`
@@ -44,6 +47,109 @@ type WebSocketMessage struct {
 	EventID string      `json:"event_id,omitempty"`
 }
 
+// ChatStorage manages chat sessions and messages in memory
+type ChatStorage struct {
+	sessions map[string]*ChatSession
+	messages map[string][]ChatMessage
+	mu       sync.RWMutex
+}
+
+// NewChatStorage creates a new chat storage instance
+func NewChatStorage() *ChatStorage {
+	return &ChatStorage{
+		sessions: make(map[string]*ChatSession),
+		messages: make(map[string][]ChatMessage),
+	}
+}
+
+// CreateSession creates a new chat session
+func (cs *ChatStorage) CreateSession(title string) *ChatSession {
+	cs.mu.Lock()
+	defer cs.mu.Unlock()
+
+	sessionID := fmt.Sprintf("session-%d", time.Now().Unix())
+	session := &ChatSession{
+		ID:        sessionID,
+		Title:     title,
+		CreatedAt: time.Now(),
+		UpdatedAt: time.Now(),
+		Status:    "active",
+	}
+
+	cs.sessions[sessionID] = session
+	cs.messages[sessionID] = []ChatMessage{}
+	return session
+}
+
+// GetSession retrieves a session by ID
+func (cs *ChatStorage) GetSession(sessionID string) (*ChatSession, bool) {
+	cs.mu.RLock()
+	defer cs.mu.RUnlock()
+	session, exists := cs.sessions[sessionID]
+	return session, exists
+}
+
+// GetAllSessions returns all sessions
+func (cs *ChatStorage) GetAllSessions() []*ChatSession {
+	cs.mu.RLock()
+	defer cs.mu.RUnlock()
+
+	sessions := make([]*ChatSession, 0, len(cs.sessions))
+	for _, session := range cs.sessions {
+		sessions = append(sessions, session)
+	}
+	return sessions
+}
+
+// DeleteSession removes a session and its messages
+func (cs *ChatStorage) DeleteSession(sessionID string) bool {
+	cs.mu.Lock()
+	defer cs.mu.Unlock()
+
+	if _, exists := cs.sessions[sessionID]; !exists {
+		return false
+	}
+
+	delete(cs.sessions, sessionID)
+	delete(cs.messages, sessionID)
+	return true
+}
+
+// AddMessage adds a message to a session
+func (cs *ChatStorage) AddMessage(sessionID string, message ChatMessage) error {
+	cs.mu.Lock()
+	defer cs.mu.Unlock()
+
+	if _, exists := cs.sessions[sessionID]; !exists {
+		return fmt.Errorf("session not found")
+	}
+
+	message.ID = fmt.Sprintf("msg-%d", time.Now().UnixNano())
+	message.Timestamp = time.Now()
+
+	cs.messages[sessionID] = append(cs.messages[sessionID], message)
+
+	// Update session timestamp
+	cs.sessions[sessionID].UpdatedAt = time.Now()
+
+	return nil
+}
+
+// GetMessages retrieves all messages for a session
+func (cs *ChatStorage) GetMessages(sessionID string) ([]ChatMessage, error) {
+	cs.mu.RLock()
+	defer cs.mu.RUnlock()
+
+	if _, exists := cs.sessions[sessionID]; !exists {
+		return nil, fmt.Errorf("session not found")
+	}
+
+	messages := cs.messages[sessionID]
+	result := make([]ChatMessage, len(messages))
+	copy(result, messages)
+	return result, nil
+}
+
 // handleChatSessions handles GET /chat/sessions and POST /chat/sessions
 func (s *Server) handleChatSessions(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
@@ -56,25 +162,7 @@ func (s *Server) handleChatSessions(w http.ResponseWriter, r *http.Request) {
 
 // getChatSessions returns all chat sessions
 func (s *Server) getChatSessions(w http.ResponseWriter, r *http.Request) {
-	// TODO: Implement actual session storage
-	sessions := []ChatSession{
-		{
-			ID:        "session-1",
-			Title:     "Code Review Discussion",
-			CreatedAt: time.Now().Add(-2 * time.Hour),
-			UpdatedAt: time.Now().Add(-30 * time.Minute),
-			Model:     "claude-3-5-sonnet-20241022",
-			Provider:  "anthropic",
-		},
-		{
-			ID:        "session-2",
-			Title:     "API Design Help",
-			CreatedAt: time.Now().Add(-1 * time.Hour),
-			UpdatedAt: time.Now().Add(-10 * time.Minute),
-			Model:     "gpt-4o",
-			Provider:  "openai",
-		},
-	}
+	sessions := s.chatStorage.GetAllSessions()
 
 	s.writeJSON(w, map[string]interface{}{
 		"sessions": sessions,
@@ -95,19 +183,13 @@ func (s *Server) createChatSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Generate session ID
-	sessionID := generateSessionID()
-
-	session := ChatSession{
-		ID:        sessionID,
-		Title:     req.Title,
-		CreatedAt: time.Now(),
-		UpdatedAt: time.Now(),
-		Model:     req.Model,
-		Provider:  req.Provider,
+	if req.Title == "" {
+		req.Title = "New Chat Session"
 	}
 
-	// TODO: Store session in database
+	session := s.chatStorage.CreateSession(req.Title)
+	session.Model = req.Model
+	session.Provider = req.Provider
 
 	w.WriteHeader(http.StatusCreated)
 	s.writeJSON(w, session)
@@ -128,14 +210,10 @@ func (s *Server) handleChatSession(w http.ResponseWriter, r *http.Request) {
 
 // getChatSession returns a specific chat session
 func (s *Server) getChatSession(w http.ResponseWriter, r *http.Request, sessionID string) {
-	// TODO: Implement actual session retrieval
-	session := ChatSession{
-		ID:        sessionID,
-		Title:     "Sample Session",
-		CreatedAt: time.Now().Add(-1 * time.Hour),
-		UpdatedAt: time.Now().Add(-10 * time.Minute),
-		Model:     "claude-3-5-sonnet-20241022",
-		Provider:  "anthropic",
+	session, exists := s.chatStorage.GetSession(sessionID)
+	if !exists {
+		s.writeError(w, "Session not found", http.StatusNotFound)
+		return
 	}
 
 	s.writeJSON(w, session)

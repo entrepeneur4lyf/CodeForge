@@ -15,7 +15,7 @@
 
 ## 📚 Overview
 
-**CodeForge** is a production-ready AI-powered coding assistant that provides intelligent, adaptive code assistance through comprehensive LLM support. With support for 300+ models from 50+ providers, smart database caching, and advanced code intelligence, CodeForge delivers enterprise-grade AI assistance for developers.
+**CodeForge** is a soon-to-be production-ready (**WARNING**: currently WIP)  AI-powered coding assistant that provides intelligent, adaptive code assistance through comprehensive LLM support. With support for 300+ models from 50+ providers, smart database caching, and advanced code intelligence, CodeForge delivers enterprise-grade AI assistance for developers.
 
 ### � Key Highlights
 
@@ -35,8 +35,11 @@
 git clone https://github.com/your-org/codeforge.git
 cd codeforge
 
-# Build CodeForge
+# Build CodeForge CLI
 go build -o codeforge ./cmd/codeforge
+
+# Build API Server
+go build -o codeforge-api ./cmd/codeforge-api
 
 # Set up your API keys (optional - many features work without keys)
 export OPENROUTER_API_KEY="your-key-here"
@@ -61,6 +64,15 @@ echo "How do I optimize this algorithm?" | ./codeforge
 
 # Start MCP server
 ./codeforge mcp server
+
+# Start API server for web interfaces
+./codeforge-api
+
+# Quick API usage
+curl -X POST http://localhost:47000/api/v1/auth  # Get auth token
+curl -H "Authorization: Bearer $TOKEN" http://localhost:47000/api/v1/providers  # List providers
+curl -X PUT -H "Authorization: Bearer $TOKEN" -d '{"value":"sk-ant-key"}' \
+  http://localhost:47000/api/v1/environment/ANTHROPIC_API_KEY  # Set API key
 ```
 
 ## 🌟 Core Features
@@ -86,15 +98,9 @@ echo "How do I optimize this algorithm?" | ./codeforge
 - **Git Integration**: Repository status and change tracking
 - **Error Pattern Recognition**: Learning from build failures and fixes
 
-
-
-### 🗄️ Smart Database System
+### 🗄️ Smart Codebase RAG
 - **LibSQL Vector Integration**: Production-ready vector operations with native indexing
 - **Multi-Dimensional Embeddings**: Support for 384-1536+ dimension vectors with optimized storage
-- **Two-Table Architecture**: Efficient separation of lightweight model data and heavy metadata
-- **Automatic Cleanup**: Database triggers for orphaned metadata management
-- **TTL Management**: 24-hour cache refresh with background updates
-- **99% Performance Improvement**: Model sync from minutes to seconds
 
 ### 🌐 Multi-Provider LLM Support
 
@@ -156,13 +162,27 @@ echo "How do I optimize this algorithm?" | ./codeforge
 - **Syntax Highlighting**: Rich syntax highlighting in web interface
 - **LSP Client Management**: Per-language LSP server integration
 
-### 🔮 Planned Features
+### 🌐 Web API & Interface
 
-#### 🎨 Web Interface (Coming Soon)
-- **Modern Web UI**: File browser, code editor, chat interface
-- **RESTful API**: Complete programmatic access
-- **Real-time Communication**: WebSocket support for streaming
-- **Project Management**: Workspace and project organization
+#### � RESTful API (Port 47000)
+- **Complete Provider Management**: Configure all 25+ LLM providers via API
+- **Environment Variable Control**: Full CRUD operations for API keys and settings
+- **Enhanced Edit/Delete**: Detailed feedback, validation, and security protection
+- **Real-time Chat**: WebSocket-based chat with streaming responses
+- **Server-Sent Events**: Live metrics and status updates
+- **Project Management**: File browsing, search, and code analysis
+
+#### 🔐 Secure Localhost Authentication
+- **Session-Based Security**: Cryptographically secure tokens with salt protection
+- **Session Hijacking Prevention**: IP + User-Agent binding with multi-factor validation
+- **No TLS Required**: Enterprise-grade security for localhost development
+- **Bearer Token Authentication**: Standard OAuth-style authentication flow
+
+#### 🎨 Web Interface (Ready for Development)
+- **Complete API Coverage**: All CodeForge features accessible via REST API
+- **WebSocket Support**: Real-time communication for chat and updates
+- **Provider Configuration**: Web-based setup for all LLM providers
+- **Security Model**: Localhost-only access with enhanced authentication
 
 ## 📋 Command Line Interface
 
@@ -182,7 +202,12 @@ codeforge mcp list    # List MCP capabilities
 codeforge mcp server  # Start MCP server
 ```
 
-
+**API Server Commands:**
+```bash
+codeforge-api                    # Start API server on port 47000
+codeforge-api --port 8080        # Start on custom port
+codeforge-api --debug            # Enable debug mode
+```
 
 ### 🚀 Advanced Usage Examples
 
@@ -202,6 +227,18 @@ cat main.go | ./codeforge "Optimize this code"
 
 # Start as MCP server for Claude Desktop
 ./codeforge mcp server
+
+# Start API server for web interfaces
+./codeforge-api
+
+# Configure providers via API
+curl -X PUT -H "Authorization: Bearer $TOKEN" \
+  -d '{"value": "sk-ant-your-key"}' \
+  http://localhost:47000/api/v1/environment/ANTHROPIC_API_KEY
+
+# Remove API key
+curl -X DELETE -H "Authorization: Bearer $TOKEN" \
+  http://localhost:47000/api/v1/environment/OPENAI_API_KEY
 ```
 
 ## ⚙️ Configuration & Deployment
@@ -216,19 +253,25 @@ cat main.go | ./codeforge "Optimize this code"
 ### 🚀 Deployment Options
 - **Standalone CLI**: Direct command-line usage
 - **MCP Server**: Model Context Protocol server mode
+- **API Server**: RESTful API with WebSocket support (port 47000)
 - **Multi-Transport**: stdio transport for MCP integration
+- **Web Interface Ready**: Complete API for building web UIs
 
 ### 🔒 Security & Performance
 
 #### 🛡️ Security Features
-- **API Key Management**: Secure credential handling
+- **Enhanced Localhost Authentication**: Session-based security with salt protection
+- **Session Hijacking Prevention**: Multi-factor validation (IP + User-Agent + Salt)
+- **API Key Management**: Secure credential handling with masked display
+- **Environment Variable Control**: Full CRUD with validation and critical variable protection
+- **Enhanced Edit/Delete Operations**: Detailed feedback and security validation
 - **Workspace Isolation**: Sandboxed workspace operations
 - **Input Validation**: Comprehensive input sanitization
 - **Error Handling**: Graceful error recovery and reporting
 
 #### ⚡ Performance Optimizations
 - **Smart Database Caching**: Two-table architecture with automatic cleanup triggers
-- **Efficient Model Sync**: 99% performance improvement (318 models in seconds)
+- **Efficient Model Sync**: (318 models in seconds)
 - **On-Demand Loading**: Comprehensive metadata fetched only when needed
 - **Multi-Level Caching**: Database, memory, and API response caching
 - **Concurrent Processing**: Thread-safe operations throughout
@@ -241,6 +284,10 @@ cat main.go | ./codeforge "Optimize this code"
 ### ✅ **Fully Implemented**
 - **CLI Interface**: Complete command-line interface with interactive and direct modes
 - **MCP Server**: Full Model Context Protocol server implementation
+- **RESTful API**: Complete API server with WebSocket and SSE support (port 47000)
+- **Secure Authentication**: Enhanced localhost authentication with salt protection
+- **Provider Management**: Complete API control of all 25+ LLM providers
+- **Environment Variables**: Full CRUD operations with validation and security protection
 - **OpenRouter Integration**: 300+ models with smart database caching and TTL enforcement
 - **Multi-Provider LLM Support**: 25+ providers with automatic fallback
 - **Vector Database**: LibSQL integration with semantic search
@@ -248,9 +295,8 @@ cat main.go | ./codeforge "Optimize this code"
 - **Language Support**: Go, Rust, Python, JavaScript, TypeScript, Java, C++, PHP
 
 ### 🚧 **In Development**
-- **Web Interface**: RESTful API and modern web UI
+- **Web Interface**: Modern web UI (API foundation complete)
 - **Additional Providers**: More LLM provider integrations
-- **Enhanced ML**: Advanced reinforcement learning features
 
 ### 🔮 **Planned Features**
 - **Docker Support**: Containerized deployment
@@ -266,14 +312,22 @@ CodeForge is built for the developer community. We welcome contributions!
 git clone https://github.com/your-org/codeforge.git
 cd codeforge
 go mod download
+
+# Build CLI interface
 go build -o codeforge ./cmd/codeforge
+
+# Build API server
+go build -o codeforge-api ./cmd/codeforge-api
 ```
 
 ### 📋 Areas for Contribution
-- **Web Interface Development**: Help build the web UI and API
+- **Web Interface Development**: Build modern web UI using the complete API
 - **Provider Integrations**: Add support for new LLM providers
 - **Language Support**: Extend language analysis capabilities
 - **ML Algorithms**: Enhance machine learning features
+- **API Enhancements**: Extend the RESTful API capabilities
+- **Environment Management**: Enhance variable validation and security features
+- **Security Features**: Enhance authentication and authorization
 - **Documentation**: Improve docs and examples
 
 ## 📄 License

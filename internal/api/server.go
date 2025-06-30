@@ -15,17 +15,19 @@ import (
 
 // Server represents the API server
 type Server struct {
-	config   *config.Config
-	vectorDB *vectordb.VectorDB
-	auth     *LocalhostAuth
-	upgrader websocket.Upgrader
+	config      *config.Config
+	vectorDB    *vectordb.VectorDB
+	auth        *LocalhostAuth
+	upgrader    websocket.Upgrader
+	chatStorage *ChatStorage
 }
 
 // NewServer creates a new API server
 func NewServer(cfg *config.Config) *Server {
 	return &Server{
-		config: cfg,
-		auth:   NewLocalhostAuth(),
+		config:      cfg,
+		auth:        NewLocalhostAuth(),
+		chatStorage: NewChatStorage(),
 		upgrader: websocket.Upgrader{
 			CheckOrigin: func(r *http.Request) bool {
 				// Only allow localhost connections for security
@@ -127,6 +129,10 @@ func (s *Server) setupRoutes() *mux.Router {
 
 	// Configuration (protected)
 	protected.HandleFunc("/config", s.handleConfig).Methods("GET", "PUT")
+
+	// Environment variables (protected)
+	protected.HandleFunc("/environment", s.handleEnvironment).Methods("GET", "PUT")
+	protected.PathPrefix("/environment/").HandlerFunc(s.handleEnvironmentVariable).Methods("GET", "PUT", "DELETE")
 
 	// Health check (public)
 	api.HandleFunc("/health", s.handleHealth).Methods("GET")
