@@ -2,7 +2,7 @@
 
 **A NOTE FROM THE REPO OWNER** - This project is a WIP and may not be fully functional. I want to thank all of the OSS contributors and project owners that gave me the opportunity to LEARN or even straight up *borrow* from them. I hope to continue to give back to the community as I grow as an AI based software architect - even though I have 30 years experience as a developer.
 
-Thanks to: Cline, Pocketbase, OpenRouter, Turso, SST/Opencode. Opencode.ai/Opencode, Codex, Gemini CLI, Cluade Code, AMP, Sourcegraph in general starting with Cody AND SO MANY MORE! Let's not steal from each other as developers. Give thanks where it is due. :)
+Thanks to: Cline, Pocketbase, OpenRouter, Turso, SST/Opencode. Opencode.ai/Opencode, Codex, Gemini CLI, Claude Code, AMP, Sourcegraph in general starting with Cody AND SO MANY MORE! Let's not steal from each other as developers. Give thanks where it is due. :)
 
 <div align="center">
 
