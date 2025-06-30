@@ -18,24 +18,71 @@ import (
 // GetAPIKeyForModel returns the appropriate API key for the given model
 func GetAPIKeyForModel(model string) string {
 	// Determine provider from model and get corresponding API key
-	if strings.HasPrefix(model, "claude-") || strings.HasPrefix(model, "anthropic.") {
+
+	// Anthropic models
+	if strings.HasPrefix(model, "claude-") || strings.HasPrefix(model, "anthropic.") || strings.Contains(model, "anthropic/") {
 		return os.Getenv("ANTHROPIC_API_KEY")
 	}
-	if strings.HasPrefix(model, "gpt-") || strings.HasPrefix(model, "openai/") {
+
+	// OpenAI models
+	if strings.HasPrefix(model, "gpt-") || strings.HasPrefix(model, "openai/") || strings.Contains(model, "openai/") {
 		return os.Getenv("OPENAI_API_KEY")
 	}
-	if strings.HasPrefix(model, "gemini-") || strings.HasPrefix(model, "google/") {
+
+	// Google models
+	if strings.HasPrefix(model, "gemini-") || strings.HasPrefix(model, "google/") || strings.Contains(model, "google/") {
 		return os.Getenv("GEMINI_API_KEY")
 	}
-	if strings.HasPrefix(model, "groq/") {
+
+	// Groq models
+	if strings.HasPrefix(model, "groq/") || strings.Contains(model, "groq/") {
 		return os.Getenv("GROQ_API_KEY")
 	}
 
-	// Default fallbacks
+	// OpenRouter models (most important - supports 300+ models)
+	if strings.Contains(model, "/") && !strings.HasPrefix(model, "openai/") && !strings.HasPrefix(model, "google/") && !strings.HasPrefix(model, "groq/") {
+		if key := os.Getenv("OPENROUTER_API_KEY"); key != "" {
+			return key
+		}
+	}
+
+	// Additional provider-specific keys
+	if strings.Contains(model, "together/") || strings.Contains(model, "togetherai/") {
+		return os.Getenv("TOGETHER_API_KEY")
+	}
+	if strings.Contains(model, "fireworks/") {
+		return os.Getenv("FIREWORKS_API_KEY")
+	}
+	if strings.Contains(model, "deepseek/") {
+		return os.Getenv("DEEPSEEK_API_KEY")
+	}
+	if strings.Contains(model, "cohere/") {
+		return os.Getenv("COHERE_API_KEY")
+	}
+	if strings.Contains(model, "mistral/") {
+		return os.Getenv("MISTRAL_API_KEY")
+	}
+	if strings.Contains(model, "perplexity/") {
+		return os.Getenv("PERPLEXITY_API_KEY")
+	}
+	if strings.Contains(model, "cerebras/") {
+		return os.Getenv("CEREBRAS_API_KEY")
+	}
+	if strings.Contains(model, "sambanova/") {
+		return os.Getenv("SAMBANOVA_API_KEY")
+	}
+
+	// Priority fallback order (most versatile first)
+	if key := os.Getenv("OPENROUTER_API_KEY"); key != "" {
+		return key
+	}
 	if key := os.Getenv("ANTHROPIC_API_KEY"); key != "" {
 		return key
 	}
 	if key := os.Getenv("OPENAI_API_KEY"); key != "" {
+		return key
+	}
+	if key := os.Getenv("GEMINI_API_KEY"); key != "" {
 		return key
 	}
 
@@ -44,7 +91,14 @@ func GetAPIKeyForModel(model string) string {
 
 // GetDefaultModel returns a default model if none specified
 func GetDefaultModel() string {
-	// Try to find a model based on available API keys
+	// Try to find a model based on available API keys (priority order)
+
+	// OpenRouter is most versatile (300+ models)
+	if os.Getenv("OPENROUTER_API_KEY") != "" {
+		return "anthropic/claude-3.5-sonnet"
+	}
+
+	// Direct provider keys
 	if os.Getenv("ANTHROPIC_API_KEY") != "" {
 		return "claude-3-5-sonnet-20241022"
 	}
@@ -53,6 +107,23 @@ func GetDefaultModel() string {
 	}
 	if os.Getenv("GEMINI_API_KEY") != "" {
 		return "gemini-1.5-pro"
+	}
+	if os.Getenv("GROQ_API_KEY") != "" {
+		return "groq/llama-3.1-70b-versatile"
+	}
+
+	// Additional providers
+	if os.Getenv("TOGETHER_API_KEY") != "" {
+		return "together/meta-llama/Llama-3-70b-chat-hf"
+	}
+	if os.Getenv("FIREWORKS_API_KEY") != "" {
+		return "fireworks/llama-v3p1-70b-instruct"
+	}
+	if os.Getenv("DEEPSEEK_API_KEY") != "" {
+		return "deepseek/deepseek-chat"
+	}
+	if os.Getenv("COHERE_API_KEY") != "" {
+		return "cohere/command-r-plus"
 	}
 
 	// Default to Claude (user will get error if no API key)

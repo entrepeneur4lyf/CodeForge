@@ -531,6 +531,8 @@ func detectLanguage(path string) string {
 		return "c"
 	case ".h", ".hpp":
 		return "c_header"
+	case ".php":
+		return "php"
 	default:
 		return "unknown"
 	}

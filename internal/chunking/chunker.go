@@ -118,6 +118,8 @@ func (c *CodeChunker) chunkByFunction(ctx context.Context, filePath, content, la
 		return c.chunkJavaFunctions(filePath, content, lines)
 	case "c", "cpp", "c++":
 		return c.chunkCFunctions(filePath, content, lines)
+	case "php":
+		return c.chunkPHPFunctions(filePath, content, lines)
 	default:
 		// Fallback to text chunking for unsupported languages
 		return c.chunkByText(ctx, filePath, content, language)
@@ -570,6 +572,63 @@ func (c *CodeChunker) chunkCFunctions(filePath, content string, lines []string) 
 	return chunks, nil
 }
 
+func (c *CodeChunker) chunkPHPFunctions(filePath, content string, lines []string) ([]*vectordb.CodeChunk, error) {
+	// Validate input consistency
+	if content != strings.Join(lines, "\n") {
+		lines = strings.Split(content, "\n") // Use authoritative content
+	}
+
+	chunks := []*vectordb.CodeChunk{}
+	var currentFunc strings.Builder
+	var funcName string
+	var startLine int
+	inFunction := false
+	braceCount := 0
+
+	for i, line := range lines {
+		trimmed := strings.TrimSpace(line)
+
+		// Skip comments
+		if strings.HasPrefix(trimmed, "//") || strings.HasPrefix(trimmed, "#") ||
+			strings.HasPrefix(trimmed, "/*") || strings.HasPrefix(trimmed, "*") {
+			continue
+		}
+
+		// Detect PHP function start
+		if c.isPHPFunctionStart(trimmed) {
+			// Save previous function if exists
+			if inFunction && currentFunc.Len() > 0 {
+				chunks = append(chunks, c.createFunctionChunk(filePath, funcName, currentFunc.String(), startLine, i-1))
+			}
+
+			// Start new function
+			funcName = c.extractPHPFunctionName(trimmed)
+			currentFunc.Reset()
+			currentFunc.WriteString(line + "\n")
+			startLine = i + 1
+			inFunction = true
+			braceCount = strings.Count(line, "{") - strings.Count(line, "}")
+		} else if inFunction {
+			currentFunc.WriteString(line + "\n")
+			braceCount += strings.Count(line, "{") - strings.Count(line, "}")
+
+			// Function ends when braces are balanced
+			if braceCount <= 0 {
+				chunks = append(chunks, c.createFunctionChunk(filePath, funcName, currentFunc.String(), startLine, i+1))
+				inFunction = false
+				currentFunc.Reset()
+			}
+		}
+	}
+
+	// Handle final function
+	if inFunction && currentFunc.Len() > 0 {
+		chunks = append(chunks, c.createFunctionChunk(filePath, funcName, currentFunc.String(), startLine, len(lines)))
+	}
+
+	return chunks, nil
+}
+
 // Helper methods
 
 // createFunctionChunk creates a function chunk
@@ -848,6 +907,53 @@ func (c *CodeChunker) extractCFunctionName(line string) string {
 	return "unknown"
 }
 
+// isPHPFunctionStart checks if a line starts a PHP function
+func (c *CodeChunker) isPHPFunctionStart(line string) bool {
+	trimmed := strings.TrimSpace(line)
+
+	// PHP function patterns:
+	// function functionName(...)
+	// public function functionName(...)
+	// private function functionName(...)
+	// protected function functionName(...)
+	// static function functionName(...)
+	// public static function functionName(...)
+
+	// Check for function keyword
+	if strings.Contains(trimmed, "function ") {
+		// Make sure it's not in a comment or string
+		if strings.HasPrefix(trimmed, "//") || strings.HasPrefix(trimmed, "#") ||
+			strings.HasPrefix(trimmed, "/*") || strings.HasPrefix(trimmed, "*") {
+			return false
+		}
+
+		// Check for opening parenthesis (function declaration)
+		if strings.Contains(trimmed, "(") {
+			return true
+		}
+	}
+
+	return false
+}
+
+// extractPHPFunctionName extracts function name from PHP function declaration
+func (c *CodeChunker) extractPHPFunctionName(line string) string {
+	// Find "function" keyword and extract name after it
+	if idx := strings.Index(line, "function "); idx >= 0 {
+		afterFunction := strings.TrimSpace(line[idx+9:]) // "function " is 9 chars
+
+		// Find the function name (before the opening parenthesis)
+		if parenIdx := strings.Index(afterFunction, "("); parenIdx > 0 {
+			funcName := strings.TrimSpace(afterFunction[:parenIdx])
+			// Remove any reference operator
+			funcName = strings.TrimPrefix(funcName, "&")
+			return funcName
+		}
+	}
+
+	return "unknown"
+}
+
 // detectLanguageFromPath detects language from file path
 func (c *CodeChunker) detectLanguageFromPath(filePath string) string {
 	ext := strings.ToLower(filepath.Ext(filePath))
@@ -870,6 +976,8 @@ func (c *CodeChunker) detectLanguageFromPath(filePath string) string {
 		return "cpp"
 	case ".h", ".hpp":
 		return "c"
+	case ".php":
+		return "php"
 	default:
 		return "text"
 	}

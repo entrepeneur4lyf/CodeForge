@@ -140,17 +140,15 @@ func (ca *CodebaseAwareness) Initialize() error {
 	log.Printf("🧠 Initializing codebase awareness for: %s", ca.rootPath)
 
 	// Initial scan
-	start := time.Now()
 	if err := ca.scanner.ScanRepository(ca.rootPath); err != nil {
 		return fmt.Errorf("failed to scan repository: %w", err)
 	}
 
 	stats := ca.graph.GetStats()
-	log.Printf("✅ Scanned %d files, %d functions, %d types in %v",
+	log.Printf("✅ Scanned %d files, %d functions, %d types",
 		stats.NodesByType[NodeTypeFile],
 		stats.NodesByType[NodeTypeFunction],
-		stats.NodesByType[NodeTypeStruct]+stats.NodesByType[NodeTypeInterface],
-		time.Since(start))
+		stats.NodesByType[NodeTypeStruct]+stats.NodesByType[NodeTypeInterface])
 
 	// Start file watcher if auto-update is enabled
 	if ca.autoUpdate {

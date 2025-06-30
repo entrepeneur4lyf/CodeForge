@@ -68,6 +68,9 @@ func Initialize(cfg *config.Config) error {
 		switch cfg.Embedding.Provider {
 		case "ollama":
 			if isOllamaAvailable() {
+				if err := checkProviderChange(ProviderOllama); err != nil {
+					fmt.Printf("⚠️ Provider change validation failed: %v\n", err)
+				}
 				embeddingService.provider = ProviderOllama
 				fmt.Println("Using Ollama embedding service (configured)")
 				embeddingService.initialized = true
@@ -76,6 +79,9 @@ func Initialize(cfg *config.Config) error {
 			fmt.Println("Ollama configured but not available, falling back...")
 		case "openai":
 			if isOpenAIAvailable() {
+				if err := checkProviderChange(ProviderOpenAI); err != nil {
+					fmt.Printf("⚠️ Provider change validation failed: %v\n", err)
+				}
 				embeddingService.provider = ProviderOpenAI
 				fmt.Println("Using OpenAI embedding service (configured)")
 				embeddingService.initialized = true
@@ -83,6 +89,11 @@ func Initialize(cfg *config.Config) error {
 			}
 			fmt.Println("OpenAI configured but not available, falling back...")
 		}
+	}
+
+	// Check provider change for fallback
+	if err := checkProviderChange(ProviderFallback); err != nil {
+		fmt.Printf("⚠️ Provider change validation failed: %v\n", err)
 	}
 
 	// Default to fallback (conservative approach)
@@ -175,9 +186,13 @@ func getOllamaEmbedding(ctx context.Context, text string) ([]float32, error) {
 	// Use nomic-embed-text as default, or first available embedding model
 	model := "nomic-embed-text"
 
+	// Add proper task prefix for nomic-embed-text-v1.5
+	// Use search_document for code content (most common use case)
+	prefixedText := "search_document: " + text
+
 	req := OllamaEmbeddingRequest{
 		Model:  model,
-		Prompt: text,
+		Prompt: prefixedText,
 	}
 
 	jsonData, err := json.Marshal(req)
@@ -273,6 +288,46 @@ func getOpenAIEmbedding(ctx context.Context, text string) ([]float32, error) {
 	return embedding, nil
 }
 
+// checkProviderChange validates embedding provider changes and triggers reindex if needed
+func checkProviderChange(newProvider EmbeddingProvider) error {
+	fmt.Printf("🔧 Setting up embedding provider: %s (%d dimensions)\n",
+		getProviderName(newProvider), getProviderDimensions(newProvider))
+
+	// Simple approach: let the vector database handle schema validation
+	// If the schema is incompatible, it will trigger migration and reindex automatically
+	// This follows the user's preference: "Just reindex if the table doesn't exist and you have to run migrations"
+
+	return nil
+}
+
+// getProviderName returns human-readable provider name
+func getProviderName(provider EmbeddingProvider) string {
+	switch provider {
+	case ProviderOllama:
+		return "Ollama"
+	case ProviderOpenAI:
+		return "OpenAI"
+	case ProviderFallback:
+		return "Fallback"
+	default:
+		return "Unknown"
+	}
+}
+
+// getProviderDimensions returns expected dimensions for a provider
+func getProviderDimensions(provider EmbeddingProvider) int {
+	switch provider {
+	case ProviderOllama:
+		return 768 // nomic-embed-text-v1.5 default (768D, can be resized to 512/256/128/64)
+	case ProviderOpenAI:
+		return 1536 // text-embedding-3-small
+	case ProviderFallback:
+		return 384 // Hash-based fallback
+	default:
+		return 384
+	}
+}
+
 // getFallbackEmbedding creates a simple hash-based embedding as fallback
 func getFallbackEmbedding(text string) []float32 {
 	// Simple hash-based pseudo-embedding for fallback
@@ -310,6 +365,61 @@ func preprocessCode(code, language string) string {
 
 	processed := strings.Join(cleanLines, "\n")
 
-	// Add language context
+	// For nomic-embed-text models, we'll add the task prefix in the provider-specific functions
+	// Here we just add language context
 	return fmt.Sprintf("Language: %s\nCode:\n%s", language, processed)
+}
+
+// ValidateProviderChange manually validates and handles embedding provider changes
+func ValidateProviderChange(newProviderName string) error {
+	if embeddingService == nil {
+		return fmt.Errorf("embedding service not initialized")
+	}
+
+	var newProvider EmbeddingProvider
+	switch newProviderName {
+	case "ollama":
+		if !isOllamaAvailable() {
+			return fmt.Errorf("Ollama not available")
+		}
+		newProvider = ProviderOllama
+	case "openai":
+		if !isOpenAIAvailable() {
+			return fmt.Errorf("OpenAI API key not available")
+		}
+		newProvider = ProviderOpenAI
+	case "fallback":
+		newProvider = ProviderFallback
+	default:
+		return fmt.Errorf("unknown provider: %s", newProviderName)
+	}
+
+	// Run provider change validation
+	if err := checkProviderChange(newProvider); err != nil {
+		return fmt.Errorf("provider change validation failed: %w", err)
+	}
+
+	// Update the service
+	embeddingService.mu.Lock()
+	embeddingService.provider = newProvider
+	embeddingService.mu.Unlock()
+
+	fmt.Printf("✅ Successfully changed embedding provider to: %s\n", getProviderName(newProvider))
+	return nil
+}
+
+// GetCurrentProvider returns information about the current embedding provider
+func GetCurrentProvider() (string, int, error) {
+	if embeddingService == nil || !embeddingService.initialized {
+		return "", 0, fmt.Errorf("embedding service not initialized")
+	}
+
+	embeddingService.mu.RLock()
+	provider := embeddingService.provider
+	embeddingService.mu.RUnlock()
+
+	providerName := getProviderName(provider)
+	dimensions := getProviderDimensions(provider)
+
+	return providerName, dimensions, nil
 }

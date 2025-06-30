@@ -41,7 +41,8 @@ Usage:
   echo "question" | codeforge  # Pipe input
 
 Features:
-- Multi-provider LLM support (OpenAI, Claude, Gemini, Groq, and more)
+- 25+ LLM providers (OpenRouter, Anthropic, OpenAI, Google, Groq, and more)
+- 300+ models with smart database caching
 - Build and fix projects automatically
 - Semantic code search and analysis
 - LSP integration for code intelligence
@@ -140,13 +141,31 @@ func handleDirectPrompt(prompt string) {
 	apiKey := chat.GetAPIKeyForModel(selectedModel)
 	if apiKey == "" {
 		if quiet {
-			fmt.Println("Error: No API key found. Set ANTHROPIC_API_KEY, OPENAI_API_KEY, or GEMINI_API_KEY environment variable.")
+			fmt.Println("Error: No API key found. Set one of the supported provider API keys.")
 		} else {
 			fmt.Println("❌ Error: No API key found")
 			fmt.Println("Please set one of these environment variables:")
-			fmt.Println("  - ANTHROPIC_API_KEY (for Claude models)")
-			fmt.Println("  - OPENAI_API_KEY (for GPT models)")
-			fmt.Println("  - GEMINI_API_KEY (for Gemini models)")
+			fmt.Println("")
+			fmt.Println("🌐 Multi-Provider Platforms:")
+			fmt.Println("  - OPENROUTER_API_KEY (300+ models from 50+ providers)")
+			fmt.Println("")
+			fmt.Println("🏢 Direct Provider Keys:")
+			fmt.Println("  - ANTHROPIC_API_KEY (Claude models)")
+			fmt.Println("  - OPENAI_API_KEY (GPT models)")
+			fmt.Println("  - GEMINI_API_KEY (Gemini models)")
+			fmt.Println("  - GROQ_API_KEY (ultra-fast inference)")
+			fmt.Println("")
+			fmt.Println("⚡ Additional Providers:")
+			fmt.Println("  - TOGETHER_API_KEY (Together AI)")
+			fmt.Println("  - FIREWORKS_API_KEY (Fireworks AI)")
+			fmt.Println("  - DEEPSEEK_API_KEY (DeepSeek)")
+			fmt.Println("  - COHERE_API_KEY (Cohere)")
+			fmt.Println("  - MISTRAL_API_KEY (Mistral AI)")
+			fmt.Println("  - PERPLEXITY_API_KEY (Perplexity)")
+			fmt.Println("  - CEREBRAS_API_KEY (Cerebras)")
+			fmt.Println("  - SAMBANOVA_API_KEY (SambaNova)")
+			fmt.Println("")
+			fmt.Println("💡 Tip: OPENROUTER_API_KEY gives you access to the most models!")
 		}
 		os.Exit(1)
 	}
@@ -232,9 +251,22 @@ func startInteractiveMode() {
 	if apiKey == "" {
 		fmt.Println("❌ Error: No API key found")
 		fmt.Println("Please set one of these environment variables:")
-		fmt.Println("  - ANTHROPIC_API_KEY (for Claude models)")
-		fmt.Println("  - OPENAI_API_KEY (for GPT models)")
-		fmt.Println("  - GEMINI_API_KEY (for Gemini models)")
+		fmt.Println("")
+		fmt.Println("🌐 Multi-Provider Platforms:")
+		fmt.Println("  - OPENROUTER_API_KEY (300+ models from 50+ providers)")
+		fmt.Println("")
+		fmt.Println("🏢 Direct Provider Keys:")
+		fmt.Println("  - ANTHROPIC_API_KEY (Claude models)")
+		fmt.Println("  - OPENAI_API_KEY (GPT models)")
+		fmt.Println("  - GEMINI_API_KEY (Gemini models)")
+		fmt.Println("  - GROQ_API_KEY (ultra-fast inference)")
+		fmt.Println("")
+		fmt.Println("⚡ Additional Providers:")
+		fmt.Println("  - TOGETHER_API_KEY, FIREWORKS_API_KEY, DEEPSEEK_API_KEY")
+		fmt.Println("  - COHERE_API_KEY, MISTRAL_API_KEY, PERPLEXITY_API_KEY")
+		fmt.Println("  - CEREBRAS_API_KEY, SAMBANOVA_API_KEY")
+		fmt.Println("")
+		fmt.Println("💡 Tip: OPENROUTER_API_KEY gives you access to the most models!")
 		os.Exit(1)
 	}
 

@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"math"
+	"net"
 	"os"
 	"path/filepath"
 	"sort"
@@ -144,8 +145,8 @@ func Initialize(cfg *config.Config) error {
 		stats: VectorStoreStats{
 			Languages:  make(map[string]int),
 			ChunkTypes: make(map[string]int),
-			Dimension:  256,                                       // Correct embedding dimension for minilm-distilled model
-			IndexType:  "JSON-based Similarity Search (Fallback)", // Will be updated if vector index works
+			Dimension:  0,                       // Will be set dynamically based on actual embedding provider
+			IndexType:  "Dynamic Vector Search", // Will be updated based on actual embedding provider
 		},
 	}
 
@@ -166,7 +167,7 @@ func Get() *VectorDB {
 func (vdb *VectorDB) initializeSchema() error {
 	ctx := context.Background()
 
-	// Create the main chunks table with proper vector support
+	// Create the main chunks table with dynamic vector support
 	chunksSQL := `
 	CREATE TABLE IF NOT EXISTS chunks (
 		id TEXT PRIMARY KEY,
@@ -184,7 +185,9 @@ func (vdb *VectorDB) initializeSchema() error {
 		hash TEXT NOT NULL,
 		created_at TEXT NOT NULL,
 		updated_at TEXT NOT NULL,
-		embedding F32_BLOB(256) -- libsql-vector-go with explicit dimension for indexing
+		embedding BLOB, -- Dynamic dimensions based on embedding provider
+		embedding_dimensions INTEGER, -- Track actual dimensions
+		embedding_provider TEXT -- Track which provider generated this
 	);
 
 	CREATE INDEX IF NOT EXISTS idx_chunks_file_path ON chunks(file_path);
@@ -192,10 +195,18 @@ func (vdb *VectorDB) initializeSchema() error {
 	CREATE INDEX IF NOT EXISTS idx_chunks_language ON chunks(language);
 	CREATE INDEX IF NOT EXISTS idx_chunks_hash ON chunks(hash);
 	CREATE INDEX IF NOT EXISTS idx_chunks_file_type ON chunks(file_path, chunk_type);
+	CREATE INDEX IF NOT EXISTS idx_chunks_provider ON chunks(embedding_provider);
+	CREATE INDEX IF NOT EXISTS idx_chunks_dimensions ON chunks(embedding_dimensions);
 	`
 
 	if _, err := vdb.db.ExecContext(ctx, chunksSQL); err != nil {
 		return fmt.Errorf("failed to create chunks table: %w", err)
+	}
+
+	// Detect and set embedding dimensions dynamically
+	if err := vdb.detectEmbeddingDimensions(); err != nil {
+		// Log warning but don't fail initialization
+		fmt.Printf("⚠️ Could not detect embedding dimensions: %v\n", err)
 	}
 
 	// Try to create vector index using libsql-vector (256 dimensions for minilm-distilled)
@@ -250,6 +261,66 @@ func (vdb *VectorDB) initializeSchema() error {
 	return nil
 }
 
+// detectEmbeddingDimensions detects the current embedding provider and sets dimensions
+func (vdb *VectorDB) detectEmbeddingDimensions() error {
+	// Try to detect embedding provider and dimensions
+	// This is a simple heuristic - in practice, this would integrate with the embedding service
+
+	// Check environment variables to determine provider
+	if os.Getenv("OPENAI_API_KEY") != "" {
+		vdb.mu.Lock()
+		vdb.stats.Dimension = 1536 // OpenAI text-embedding-3-small
+		vdb.stats.IndexType = "OpenAI Embeddings (1536D)"
+		vdb.mu.Unlock()
+		fmt.Printf("🔧 Detected OpenAI embedding provider (1536 dimensions)\n")
+		return nil
+	}
+
+	// Check for Ollama (common case)
+	if isOllamaRunning() {
+		vdb.mu.Lock()
+		vdb.stats.Dimension = 768 // Common Ollama dimension
+		vdb.stats.IndexType = "Ollama Embeddings (768D)"
+		vdb.mu.Unlock()
+		fmt.Printf("🔧 Detected Ollama embedding provider (768 dimensions)\n")
+		return nil
+	}
+
+	// Default to fallback
+	vdb.mu.Lock()
+	vdb.stats.Dimension = 384 // Hash-based fallback
+	vdb.stats.IndexType = "Fallback Embeddings (384D)"
+	vdb.mu.Unlock()
+	fmt.Printf("🔧 Using fallback embedding provider (384 dimensions)\n")
+
+	return nil
+}
+
+// isOllamaRunning checks if Ollama is available
+func isOllamaRunning() bool {
+	// Simple check - try to connect to default Ollama port
+	conn, err := net.DialTimeout("tcp", "localhost:11434", 1*time.Second)
+	if err != nil {
+		return false
+	}
+	conn.Close()
+	return true
+}
+
+// detectCurrentProvider detects which embedding provider is currently being used
+func (vdb *VectorDB) detectCurrentProvider() string {
+	// Check environment variables to determine provider
+	if os.Getenv("OPENAI_API_KEY") != "" {
+		return "openai"
+	}
+
+	if isOllamaRunning() {
+		return "ollama"
+	}
+
+	return "fallback"
+}
+
 // StoreChunk stores a code chunk with its embedding in the database
 func (vdb *VectorDB) StoreChunk(ctx context.Context, chunk *CodeChunk, embedding []float32) error {
 	// Validate embedding
@@ -295,12 +366,16 @@ func (vdb *VectorDB) StoreChunk(ctx context.Context, chunk *CodeChunk, embedding
 	}
 	embeddingStr += "]"
 
+	// Detect embedding provider for this chunk
+	embeddingProvider := vdb.detectCurrentProvider()
+	embeddingDimensions := len(embedding)
+
 	query := `
 	INSERT OR REPLACE INTO chunks (
 		id, file_path, content, chunk_type, language, symbols, imports,
 		start_line, end_line, start_column, end_column, metadata, hash,
-		created_at, updated_at, embedding
-	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, vector32(?))
+		created_at, updated_at, embedding, embedding_dimensions, embedding_provider
+	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`
 
 	_, err = vdb.db.ExecContext(ctx, query,
@@ -319,7 +394,9 @@ func (vdb *VectorDB) StoreChunk(ctx context.Context, chunk *CodeChunk, embedding
 		chunk.Hash,
 		chunk.CreatedAt.Format(time.RFC3339),
 		chunk.UpdatedAt.Format(time.RFC3339),
-		embeddingStr, // Use vector32(?) function with [1,2,3] format
+		embeddingStr, // Store as BLOB with dynamic dimensions
+		embeddingDimensions,
+		embeddingProvider,
 	)
 	if err != nil {
 		return fmt.Errorf("failed to store chunk: %w", err)
@@ -389,13 +466,12 @@ func (vdb *VectorDB) StoreErrorPattern(ctx context.Context, pattern *ErrorPatter
 // - ChromaDB for fast vector similarity search (if available)
 // - libsql fallback for basic text search
 func (vdb *VectorDB) SearchSimilarCode(ctx context.Context, queryEmbedding []float32, language string, limit int) ([]SearchResult, error) {
-	// Performance monitoring
+	// Performance monitoring (internal only)
 	start := time.Now()
 	defer func() {
 		duration := time.Since(start)
-		if duration > 100*time.Millisecond {
-			fmt.Printf("Warning: Vector search took %v (>100ms)\n", duration)
-		}
+		// Log performance internally but don't show to users
+		_ = duration
 	}()
 
 	// Use basic cosine similarity search (no libsql-vectors needed)

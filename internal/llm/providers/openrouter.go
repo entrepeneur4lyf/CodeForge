@@ -3,11 +3,13 @@ package providers
 import (
 	"bytes"
 	"context"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -519,23 +521,91 @@ func (h *OpenRouterHandler) GetOpenRouterModels(ctx context.Context) ([]OpenRout
 
 // getModelsFromDatabase retrieves cached models from database
 func (h *OpenRouterHandler) getModelsFromDatabase(ctx context.Context) ([]OpenRouterModel, error) {
-	// For now, fall back to memory cache until database integration is complete
-	// TODO: Query from vectordb openrouter_models table
-	if cachedModels, valid := modelsCache.getCachedModels(); valid {
-		return cachedModels, nil
+	if h.db == nil {
+		// Fall back to memory cache if no database
+		if cachedModels, valid := modelsCache.getCachedModels(); valid {
+			return cachedModels, nil
+		}
+		return nil, fmt.Errorf("no database connection available")
 	}
-	return nil, fmt.Errorf("no cached models available")
+
+	// Query from openrouter_models table
+	query := `
+		SELECT model_id, name, description, context_length, created_date, last_updated
+		FROM openrouter_models
+		WHERE last_updated > datetime('now', '-24 hours')
+		ORDER BY name
+	`
+
+	rows, err := h.db.QueryContext(ctx, query)
+	if err != nil {
+		// Fall back to memory cache on database error
+		if cachedModels, valid := modelsCache.getCachedModels(); valid {
+			return cachedModels, nil
+		}
+		return nil, fmt.Errorf("failed to query models from database: %w", err)
+	}
+	defer rows.Close()
+
+	var models []OpenRouterModel
+	for rows.Next() {
+		var model OpenRouterModel
+		var lastUpdated string
+
+		err := rows.Scan(
+			&model.ID, &model.Name, &model.Description,
+			&model.ContextLength, &model.Created, &lastUpdated,
+		)
+		if err != nil {
+			continue // Skip invalid rows
+		}
+
+		models = append(models, model)
+	}
+
+	if len(models) == 0 {
+		// Fall back to memory cache if no database results
+		if cachedModels, valid := modelsCache.getCachedModels(); valid {
+			return cachedModels, nil
+		}
+		return nil, fmt.Errorf("no models found in database")
+	}
+
+	return models, nil
 }
 
 // isDatabaseCacheValid checks if the database cache is still valid (24 hour TTL)
 func (h *OpenRouterHandler) isDatabaseCacheValid(ctx context.Context) bool {
-	// TODO: Check timestamp from database table
-	// For now, use memory cache timestamp
-	modelsCache.mutex.RLock()
-	defer modelsCache.mutex.RUnlock()
+	if h.db == nil {
+		// Fallback to memory cache timestamp
+		modelsCache.mutex.RLock()
+		defer modelsCache.mutex.RUnlock()
+		cacheTTL := 24 * time.Hour
+		return time.Since(modelsCache.timestamp) < cacheTTL
+	}
+
+	// Check database timestamp for TTL enforcement
+	var lastUpdate time.Time
+	query := `
+		SELECT MAX(last_seen) as last_update
+		FROM openrouter_models
+		WHERE last_seen IS NOT NULL
+	`
+
+	row := h.db.QueryRowContext(ctx, query)
+	if err := row.Scan(&lastUpdate); err != nil {
+		// If no models in database, cache is invalid
+		return false
+	}
 
 	cacheTTL := 24 * time.Hour
-	return time.Since(modelsCache.timestamp) < cacheTTL
+	isValid := time.Since(lastUpdate) < cacheTTL
+
+	if !isValid {
+		fmt.Printf("🕒 Database cache expired (last update: %v)\n", lastUpdate.Format("2006-01-02 15:04:05"))
+	}
+
+	return isValid
 }
 
 // refreshModelsInDatabase fetches fresh models from API and stores in database
@@ -586,9 +656,13 @@ func (h *OpenRouterHandler) refreshModelsInDatabase(ctx context.Context) ([]Open
 
 // storeModelsInDatabase stores models using efficient two-table architecture
 func (h *OpenRouterHandler) storeModelsInDatabase(ctx context.Context, models []OpenRouterModel) error {
-	// TODO: Integrate with vectordb for actual database operations
-	// This implements the smart two-table approach:
+	if h.db == nil {
+		// No database available, store in memory cache only
+		modelsCache.setCachedModels(models)
+		return nil
+	}
 
+	// This implements the smart two-table approach:
 	// 1. Sync lightweight model list (fast, frequent)
 	if err := h.syncModelList(ctx, models); err != nil {
 		return fmt.Errorf("failed to sync model list: %w", err)
@@ -729,17 +803,93 @@ func (h *OpenRouterHandler) syncModelList(ctx context.Context, models []OpenRout
 
 // getModelMetadata fetches detailed metadata for a specific model (on-demand)
 func (h *OpenRouterHandler) getModelMetadata(ctx context.Context, modelID string) (*OpenRouterModel, error) {
-	// TODO: Check database first, fetch from API if missing
-	// This implements lazy loading:
-	// 1. Check openrouter_model_metadata table
-	// 2. If missing or stale, fetch from /models/{id}/endpoints
-	// 3. Store in metadata table with long TTL
+	// 1. Check database first for cached metadata
+	if cachedModel, err := h.getModelMetadataFromDB(ctx, modelID); err == nil {
+		// Check if metadata is still fresh (7 days TTL for metadata)
+		if !h.isMetadataStale(ctx, modelID) {
+			fmt.Printf("📋 Using cached metadata for %s\n", modelID)
+			return cachedModel, nil
+		}
+	}
 
+	// 2. Metadata missing or stale, fetch from API
+	fmt.Printf("🔄 Fetching fresh metadata for %s\n", modelID)
 	model, err := h.getDetailedModelMetadata(ctx, OpenRouterModel{ID: modelID})
 	if err != nil {
 		return nil, err
 	}
+
+	// 3. Metadata is automatically stored in getDetailedModelMetadata
 	return &model, nil
+}
+
+// getModelMetadataFromDB retrieves cached metadata from database
+func (h *OpenRouterHandler) getModelMetadataFromDB(ctx context.Context, modelID string) (*OpenRouterModel, error) {
+	if h.db == nil {
+		return nil, fmt.Errorf("database not available")
+	}
+
+	query := `
+		SELECT m.model_id, m.name, m.description, m.created_date, m.context_length,
+		       md.architecture_json, md.endpoints_json, md.max_context_length,
+		       md.supported_modalities, md.provider_count, md.last_updated
+		FROM openrouter_models m
+		LEFT JOIN openrouter_model_metadata md ON m.model_id = md.model_id
+		WHERE m.model_id = ?
+	`
+
+	row := h.db.QueryRowContext(ctx, query, modelID)
+
+	var model OpenRouterModel
+	var architectureJSON, endpointsJSON, supportedModalities sql.NullString
+	var maxContextLength, providerCount sql.NullInt64
+	var lastUpdated sql.NullTime
+
+	err := row.Scan(
+		&model.ID, &model.Name, &model.Description, &model.Created, &model.ContextLength,
+		&architectureJSON, &endpointsJSON, &maxContextLength,
+		&supportedModalities, &providerCount, &lastUpdated,
+	)
+
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return nil, fmt.Errorf("model not found in database")
+		}
+		return nil, fmt.Errorf("failed to query model metadata: %w", err)
+	}
+
+	// Deserialize JSON fields if available
+	if architectureJSON.Valid && architectureJSON.String != "" {
+		if err := json.Unmarshal([]byte(architectureJSON.String), &model.Architecture); err != nil {
+			fmt.Printf("⚠️ Failed to unmarshal architecture for %s: %v\n", modelID, err)
+		}
+	}
+
+	if endpointsJSON.Valid && endpointsJSON.String != "" {
+		if err := json.Unmarshal([]byte(endpointsJSON.String), &model.Endpoints); err != nil {
+			fmt.Printf("⚠️ Failed to unmarshal endpoints for %s: %v\n", modelID, err)
+		}
+	}
+
+	return &model, nil
+}
+
+// isMetadataStale checks if metadata needs refresh (7 day TTL)
+func (h *OpenRouterHandler) isMetadataStale(ctx context.Context, modelID string) bool {
+	if h.db == nil {
+		return true
+	}
+
+	query := `SELECT last_updated FROM openrouter_model_metadata WHERE model_id = ?`
+	row := h.db.QueryRowContext(ctx, query, modelID)
+
+	var lastUpdated time.Time
+	if err := row.Scan(&lastUpdated); err != nil {
+		return true // No metadata found, consider stale
+	}
+
+	metadataTTL := 7 * 24 * time.Hour // 7 days
+	return time.Since(lastUpdated) > metadataTTL
 }
 
 // Database helper functions for efficient model sync
@@ -941,20 +1091,137 @@ func (h *OpenRouterHandler) getDetailedModelMetadata(ctx context.Context, model 
 		enrichedModel.Created = model.Created
 	}
 
+	// Store the comprehensive metadata in database
+	if err := h.storeModelMetadata(ctx, enrichedModel); err != nil {
+		// Log warning but don't fail - we still have the enriched model
+		fmt.Printf("⚠️ Failed to store metadata for %s: %v\n", enrichedModel.ID, err)
+	}
+
 	return enrichedModel, nil
 }
 
 // storeModelMetadata stores comprehensive metadata in database
 func (h *OpenRouterHandler) storeModelMetadata(ctx context.Context, model OpenRouterModel) error {
-	// TODO: Store in openrouter_model_metadata table
-	// This includes:
-	// - architecture_json (modality, tokenizer, etc.)
-	// - endpoints_json (all provider endpoints)
-	// - pricing_summary_json (aggregated pricing)
-	// - computed fields (max_context_length, provider_count, best_prices, etc.)
+	if h.db == nil {
+		return fmt.Errorf("database connection not available")
+	}
 
-	fmt.Printf("💾 Storing metadata for %s\n", model.ID)
+	// Serialize architecture data
+	architectureJSON, err := json.Marshal(model.Architecture)
+	if err != nil {
+		return fmt.Errorf("failed to marshal architecture: %w", err)
+	}
+
+	// Serialize endpoints data
+	endpointsJSON, err := json.Marshal(model.Endpoints)
+	if err != nil {
+		return fmt.Errorf("failed to marshal endpoints: %w", err)
+	}
+
+	// Compute aggregated fields
+	maxContextLength := 0
+	providerCount := len(model.Endpoints)
+	var bestPricePrompt, bestPriceCompletion float64 = -1, -1
+	var uptimeSum float64
+	var supportedModalities []string
+
+	// Process endpoints to compute aggregated data
+	for _, endpoint := range model.Endpoints {
+		// Max context length
+		if endpoint.ContextLength > maxContextLength {
+			maxContextLength = endpoint.ContextLength
+		}
+
+		// Best pricing (lowest non-zero prices)
+		if endpoint.Pricing.Prompt != "" {
+			if price, err := parsePrice(endpoint.Pricing.Prompt); err == nil && price > 0 {
+				if bestPricePrompt < 0 || price < bestPricePrompt {
+					bestPricePrompt = price
+				}
+			}
+		}
+		if endpoint.Pricing.Completion != "" {
+			if price, err := parsePrice(endpoint.Pricing.Completion); err == nil && price > 0 {
+				if bestPriceCompletion < 0 || price < bestPriceCompletion {
+					bestPriceCompletion = price
+				}
+			}
+		}
+
+		// Average uptime
+		uptimeSum += endpoint.UptimeLast30m
+	}
+
+	// Calculate average uptime
+	var uptimeAverage float64
+	if providerCount > 0 {
+		uptimeAverage = uptimeSum / float64(providerCount)
+	}
+
+	// Extract supported modalities
+	if len(model.Architecture.InputModalities) > 0 {
+		supportedModalities = model.Architecture.InputModalities
+	}
+	modalitiesStr := strings.Join(supportedModalities, ",")
+
+	// Create pricing summary
+	pricingSummary := map[string]interface{}{
+		"best_prompt_price":     bestPricePrompt,
+		"best_completion_price": bestPriceCompletion,
+		"provider_count":        providerCount,
+		"average_uptime":        uptimeAverage,
+	}
+	pricingSummaryJSON, err := json.Marshal(pricingSummary)
+	if err != nil {
+		return fmt.Errorf("failed to marshal pricing summary: %w", err)
+	}
+
+	// Insert or update metadata
+	query := `
+		INSERT OR REPLACE INTO openrouter_model_metadata
+		(model_id, architecture_json, endpoints_json, pricing_summary_json,
+		 max_context_length, supported_modalities, provider_count,
+		 best_price_prompt, best_price_completion, uptime_average,
+		 last_updated, metadata_version)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, 1)
+	`
+
+	_, err = h.db.ExecContext(ctx, query,
+		model.ID,
+		string(architectureJSON),
+		string(endpointsJSON),
+		string(pricingSummaryJSON),
+		maxContextLength,
+		modalitiesStr,
+		providerCount,
+		bestPricePrompt,
+		bestPriceCompletion,
+		uptimeAverage,
+	)
+
+	if err != nil {
+		return fmt.Errorf("failed to store metadata for %s: %w", model.ID, err)
+	}
+
+	fmt.Printf("💾 Stored metadata for %s (%d providers, %d context)\n",
+		model.ID, providerCount, maxContextLength)
 	return nil
+}
+
+// parsePrice parses a price string to float64
+func parsePrice(priceStr string) (float64, error) {
+	// Remove any currency symbols and whitespace
+	cleaned := strings.TrimSpace(priceStr)
+	cleaned = strings.TrimPrefix(cleaned, "$")
+	cleaned = strings.TrimPrefix(cleaned, "€")
+	cleaned = strings.TrimPrefix(cleaned, "£")
+
+	// Handle scientific notation and regular decimals
+	if cleaned == "" || cleaned == "0" {
+		return 0, nil
+	}
+
+	return strconv.ParseFloat(cleaned, 64)
 }
 
 // GetModelWithMetadata retrieves model with on-demand metadata loading
@@ -971,6 +1238,110 @@ func GetModelWithMetadata(ctx context.Context, apiKey, modelID string) (*OpenRou
 	db := vectordb.GetInstance()
 	handler := NewOpenRouterHandlerWithDB(options, db)
 	return handler.getModelMetadata(ctx, modelID)
+}
+
+// cleanupExpiredModels removes models that haven't been seen for longer than TTL
+func (h *OpenRouterHandler) cleanupExpiredModels(ctx context.Context) error {
+	if h.db == nil {
+		return nil
+	}
+
+	// Remove models not seen for more than 7 days (longer than sync TTL)
+	cleanupTTL := 7 * 24 * time.Hour
+	cutoffTime := time.Now().Add(-cleanupTTL)
+
+	query := `
+		DELETE FROM openrouter_models
+		WHERE last_seen < ? OR last_seen IS NULL
+	`
+
+	result, err := h.db.ExecContext(ctx, query, cutoffTime)
+	if err != nil {
+		return fmt.Errorf("failed to cleanup expired models: %w", err)
+	}
+
+	rowsAffected, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("failed to get cleanup count: %w", err)
+	}
+
+	if rowsAffected > 0 {
+		fmt.Printf("🧹 Cleaned up %d expired models (older than %v)\n", rowsAffected, cleanupTTL)
+	}
+
+	return nil
+}
+
+// cleanupStaleMetadata removes metadata that hasn't been updated for longer than metadata TTL
+func (h *OpenRouterHandler) cleanupStaleMetadata(ctx context.Context) error {
+	if h.db == nil {
+		return nil
+	}
+
+	// Remove metadata older than 30 days
+	metadataTTL := 30 * 24 * time.Hour
+	cutoffTime := time.Now().Add(-metadataTTL)
+
+	query := `
+		DELETE FROM openrouter_model_metadata
+		WHERE last_updated < ? OR last_updated IS NULL
+	`
+
+	result, err := h.db.ExecContext(ctx, query, cutoffTime)
+	if err != nil {
+		return fmt.Errorf("failed to cleanup stale metadata: %w", err)
+	}
+
+	rowsAffected, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("failed to get metadata cleanup count: %w", err)
+	}
+
+	if rowsAffected > 0 {
+		fmt.Printf("🧹 Cleaned up %d stale metadata entries (older than %v)\n", rowsAffected, metadataTTL)
+	}
+
+	return nil
+}
+
+// RefreshModelsIfExpired checks TTL and refreshes models if needed
+func RefreshModelsIfExpired(ctx context.Context, apiKey string) error {
+	if apiKey == "" {
+		return fmt.Errorf("API key required for model refresh")
+	}
+
+	options := llm.ApiHandlerOptions{
+		OpenRouterAPIKey: apiKey,
+	}
+
+	db := vectordb.GetInstance()
+	handler := NewOpenRouterHandlerWithDB(options, db)
+
+	// Check if refresh is needed
+	if handler.isDatabaseCacheValid(ctx) {
+		fmt.Println("✅ Model cache is still valid, no refresh needed")
+		return nil
+	}
+
+	fmt.Println("🔄 Model cache expired, refreshing...")
+
+	// Cleanup expired data first
+	if err := handler.cleanupExpiredModels(ctx); err != nil {
+		fmt.Printf("⚠️ Cleanup warning: %v\n", err)
+	}
+
+	if err := handler.cleanupStaleMetadata(ctx); err != nil {
+		fmt.Printf("⚠️ Metadata cleanup warning: %v\n", err)
+	}
+
+	// Refresh models
+	_, err := handler.GetOpenRouterModels(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to refresh models: %w", err)
+	}
+
+	fmt.Println("✅ Model cache refreshed successfully")
+	return nil
 }
 
 // parseModelReleaseDate extracts release date from model for sorting
@@ -1062,7 +1433,11 @@ func extractProviderFromID(modelID string) string {
 		case "microsoft":
 			return "Microsoft"
 		default:
-			return strings.Title(provider)
+			// Capitalize first letter
+			if len(provider) > 0 {
+				return strings.ToUpper(provider[:1]) + provider[1:]
+			}
+			return provider
 		}
 	}
 	return "Other"
